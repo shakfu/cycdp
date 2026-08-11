@@ -1863,7 +1863,7 @@ def _format_text(cmd_name: str, data) -> str:
             f"{'Frame':>6}  {'Time (s)':>10}  {'Freq (Hz)':>10}  {'Confidence':>10}"
         )
         lines.append("-" * 42)
-        for i, (freq, conf) in enumerate(zip(pitches, confidences)):
+        for i, (freq, conf) in enumerate(zip(pitches, confidences, strict=True)):
             t = i * frame_time
             lines.append(f"{i:6d}  {t:10.4f}  {freq:10.2f}  {conf:10.4f}")
     elif cmd_name == "formants":
@@ -1910,7 +1910,7 @@ def _format_csv(cmd_name: str, data) -> str:
         confidences = data["confidence"]
         frame_time = data["frame_time"]
         lines.append("frame,time,frequency,confidence")
-        for i, (freq, conf) in enumerate(zip(pitches, confidences)):
+        for i, (freq, conf) in enumerate(zip(pitches, confidences, strict=True)):
             t = i * frame_time
             lines.append(f"{i},{t},{freq},{conf}")
     elif cmd_name == "formants":
@@ -1990,7 +1990,7 @@ def handle_info(args: argparse.Namespace) -> None:
 
     buf = cycdp.read_file(input_path)
     duration = buf.frame_count / buf.sample_rate
-    peak_level, peak_pos = cycdp.peak(buf)  # type: ignore[arg-type]
+    peak_level, peak_pos = cycdp.peak(buf)
 
     print(f"File:        {input_path}")
     print(f"Duration:    {duration:.4f}s")
@@ -2007,10 +2007,8 @@ def handle_info(args: argparse.Namespace) -> None:
 # =============================================================================
 
 
-def main(argv: list[str] | None = None) -> None:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-
+def dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """Route a parsed command to its handler."""
     if not args.command:
         parser.print_help()
         return
@@ -2036,6 +2034,32 @@ def main(argv: list[str] | None = None) -> None:
         handle_synth(args.command, spec, args)
     elif input_type == "analysis":
         handle_analysis(args.command, spec, args)
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    try:
+        dispatch(args, parser)
+    except KeyboardInterrupt:
+        print("Interrupted", file=sys.stderr)
+        sys.exit(130)
+    except json.JSONDecodeError as e:
+        # Raised by prepare_kwargs on malformed --markers/--times style values.
+        print(f"Error: invalid JSON argument: {e}", file=sys.stderr)
+        sys.exit(1)
+    except (cycdp.CDPError, ValueError, TypeError, OSError) as e:
+        # Ordinary user errors -- unreadable file, wrong format, a parameter
+        # the DSP layer rejects. A traceback here is noise, not information.
+        print(f"Error: {e}", file=sys.stderr)
+        if os.environ.get("CYCDP_TRACEBACK"):
+            raise
+        print(
+            "(set CYCDP_TRACEBACK=1 for the full traceback)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":

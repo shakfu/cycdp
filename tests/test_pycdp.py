@@ -5,6 +5,7 @@ Uses array.array for testing (no numpy dependency required).
 """
 
 import array
+
 import pytest
 
 import cycdp
@@ -840,19 +841,20 @@ class TestSpectral:
         )
 
     def test_time_stretch_double(self, sine_wave):
-        """Time stretch should approximately double the length."""
+        """Time stretch should double the length.
+
+        Tolerance is 5%: measured error is 2-3%. The original +/-25% band would
+        have passed an implementation that was audibly, obviously wrong.
+        """
         original_frames = sine_wave.frame_count
         stretched = cycdp.time_stretch(sine_wave, factor=2.0)
-        # Should be roughly double length (allow some tolerance for FFT windowing)
-        assert stretched.frame_count > original_frames * 1.5
-        assert stretched.frame_count < original_frames * 2.5
+        assert stretched.frame_count == pytest.approx(original_frames * 2, rel=0.05)
 
     def test_time_stretch_half(self, sine_wave):
         """Time stretch with 0.5 should halve the length."""
         original_frames = sine_wave.frame_count
         compressed = cycdp.time_stretch(sine_wave, factor=0.5)
-        assert compressed.frame_count > original_frames * 0.3
-        assert compressed.frame_count < original_frames * 0.7
+        assert compressed.frame_count == pytest.approx(original_frames * 0.5, rel=0.05)
 
     @pytest.mark.parametrize("frames", [1024, 1025, 1100, 1536, 2048])
     def test_time_stretch_short_input_does_not_crash(self, frames):
@@ -3909,8 +3911,7 @@ class TestRetime:
         assert isinstance(result, cycdp.Buffer)
         # Should be approximately 2x longer (some variation due to grain processing)
         expected_length = sine_buffer.sample_count * 2
-        assert result.sample_count > expected_length * 0.8
-        assert result.sample_count < expected_length * 1.2
+        assert result.sample_count == pytest.approx(expected_length, rel=0.1)
 
     def test_retime_compress(self, sine_buffer):
         """Retime with ratio > 1 should compress (shorten) audio."""

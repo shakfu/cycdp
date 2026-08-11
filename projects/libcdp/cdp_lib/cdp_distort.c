@@ -6,7 +6,6 @@
 
 #include "cdp_distort.h"
 #include "cdp_lib_internal.h"
-#include <time.h>
 
 cdp_lib_buffer* cdp_lib_distort_overload(cdp_lib_ctx* ctx,
                                           const cdp_lib_buffer* input,
@@ -252,14 +251,14 @@ cdp_lib_buffer* cdp_lib_distort_shuffle(cdp_lib_ctx* ctx,
         order[i] = i;
     }
 
-    /* Shuffle using Fisher-Yates algorithm */
-    if (seed == 0) {
-        seed = (unsigned int)time(NULL);
-    }
-    srand(seed);
+    /* Shuffle using Fisher-Yates algorithm.
+       Uses the context PRNG rather than srand()/rand(): the latter is
+       process-global state shared with every other library in the address
+       space, and is neither reentrant nor reproducible under concurrency. */
+    cdp_lib_seed(ctx, seed);
 
     for (int i = chunk_count - 1; i > 0; i--) {
-        int j = rand() % (i + 1);
+        int j = (int)(cdp_lib_random_u64(ctx) % (uint64_t)(i + 1));
         int temp = order[i];
         order[i] = order[j];
         order[j] = temp;
@@ -682,11 +681,8 @@ cdp_lib_buffer* cdp_lib_distort_mark(cdp_lib_ctx* ctx,
         }
     }
 
-    /* Initialize random seed */
-    if (seed == 0) {
-        seed = (unsigned int)time(NULL);
-    }
-    srand(seed);
+    /* Initialize the context PRNG (see the note in distort_shuffle). */
+    cdp_lib_seed(ctx, seed);
 
     /* Find waveset groups at each marker */
     size_t* group_starts = (size_t*)malloc(marker_count * sizeof(size_t));
@@ -744,7 +740,7 @@ cdp_lib_buffer* cdp_lib_distort_mark(cdp_lib_ctx* ctx,
             size_t len = (size_t)((1.0 - t) * group_lengths[i] + t * group_lengths[i+1]);
             /* Apply randomization */
             if (random > 0.0) {
-                double rnd = (double)rand() / RAND_MAX * 0.5 * random;
+                double rnd = cdp_lib_random(ctx) * 0.5 * random;
                 len = (size_t)(len * (1.0 - rnd));
             }
             if (len < 1) len = 1;
@@ -783,8 +779,9 @@ cdp_lib_buffer* cdp_lib_distort_mark(cdp_lib_ctx* ctx,
     size_t out_pos = 0;
     int invert_phase = 0;
 
-    /* Reseed for reproducibility */
-    srand(seed);
+    /* Reseed so this pass is reproducible independently of the measuring
+       pass above, which also draws from the PRNG. */
+    cdp_lib_seed(ctx, seed);
 
     for (int i = 0; i < marker_count - 1; i++) {
         float* buf1 = mono->data + group_starts[i];
@@ -803,7 +800,7 @@ cdp_lib_buffer* cdp_lib_distort_mark(cdp_lib_ctx* ctx,
 
             /* Apply randomization */
             if (random > 0.0) {
-                double rnd = (double)rand() / RAND_MAX * 0.5 * random;
+                double rnd = cdp_lib_random(ctx) * 0.5 * random;
                 out_len = (size_t)(out_len * (1.0 - rnd));
             }
             if (out_len < 1) out_len = 1;

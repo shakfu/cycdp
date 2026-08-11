@@ -17,7 +17,9 @@ on:
         type: boolean
 
 env:
-  # Note: cp314 excluded due to Cython compatibility issues on macOS x86_64
+  # Must track requires-python (">=3.10") in pyproject.toml and the CI build
+  # matrix. cp314 was previously listed here while a comment above claimed it
+  # was excluded; it is built, and the comment was stale.
   CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-*"
   CIBW_SKIP: "*-musllinux_*"
   CIBW_TEST_REQUIRES: pytest
@@ -91,7 +93,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@v2.23
+        uses: pypa/cibuildwheel@v3.3.1
         env:
           CIBW_ARCHS_WINDOWS: AMD64
 

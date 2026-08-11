@@ -51,17 +51,25 @@ TYPE_MAP = {
 
 # Return annotations. Cython `def` functions return generic Python objects, so
 # these cannot be derived from the source and must be declared here.
+#
+# tests/test_signatures.py checks every entry against the value the compiled
+# function actually returns. The analysis functions were originally declared as
+# lists here, inherited from the hand-written stub, when they in fact return
+# dicts -- the same class of defect the generator exists to prevent.
 RETURNS = {
     "apply_gain": "None",
     "apply_gain_db": "None",
     "apply_normalize": "None",
     "apply_normalize_db": "None",
     "apply_phase_invert": "None",
-    "formants": "list[list[tuple[float, float]]]",
-    "get_partials": "list[tuple[float, float, float]]",
+    # Analysis functions return a dict of parallel arrays plus metadata; see
+    # each function's docstring in _core.pyx for the keys.
+    "formants": "dict[str, Any]",
+    "get_partials": "dict[str, Any]",
+    "pitch": "dict[str, Any]",
+    "fofex_extract_all": "tuple[Buffer, int, int]",
     "get_peak": "tuple[float, int]",
     "peak": "tuple[float, int]",
-    "pitch": "list[tuple[float, float]]",
     "split_channels": "list[Buffer]",
     "write_file": "None",
 }
@@ -74,14 +82,14 @@ PARAM_OVERRIDES = {
     ("distort_mark", "markers"): "Sequence[float]",
     ("grain_position", "positions"): "list[float] | None",
     ("grain_reorder", "order"): "list[int] | None",
-    ("grain_repitch", "pitch_curve"): "list[tuple[float, float]] | None",
+    ("grain_repitch", "pitch_curve"): "Sequence[tuple[float, float]] | None",
     ("grain_rerhythm", "ratios"): "list[float] | None",
     ("grain_rerhythm", "times"): "list[float] | None",
-    ("grain_timewarp", "stretch_curve"): "list[tuple[float, float]] | None",
+    ("grain_timewarp", "stretch_curve"): "Sequence[tuple[float, float]] | None",
     ("interleave", "buffers"): "list[Buffer]",
     ("mix", "buffers"): "list[Buffer]",
     ("mix", "gains"): "list[float] | None",
-    ("pan_envelope", "points"): "list[tuple[float, float]]",
+    ("pan_envelope", "points"): "Sequence[tuple[float, float]]",
     ("phase_invert", "samples"): "Buffer | BufferLike",
     ("retime", "buf"): "Buffer",
     ("rotor", "buf"): "Buffer",

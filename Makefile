@@ -7,7 +7,7 @@
 .PHONY: all sync build rebuild test lint format typecheck qa clean \
         distclean wheel sdist dist check publish-test publish upgrade \
         coverage coverage-html coverage-build docs release bump demos \
-        demos-clean help stubs stubs-check sanitize
+        demos-clean help stubs stubs-check sanitize tsan
 
 # Default target
 all: build
@@ -136,6 +136,11 @@ coverage-html: coverage-build
 sanitize:
 	@bash scripts/run_sanitizers.sh
 
+# Build with ThreadSanitizer and run the suite. Validates the GIL-releasing
+# processing calls; TSan and ASan cannot be combined, so this is a separate run.
+tsan:
+	@CYCDP_SANITIZER=thread bash scripts/run_sanitizers.sh
+
 # Rebuild the extension with line tracing enabled (used by the coverage targets)
 coverage-build:
 	@echo "Building instrumented extension (CYCDP_COVERAGE=ON)..."
@@ -195,6 +200,7 @@ help:
 	@echo "  coverage     - Rebuild with line tracing, run tests with coverage"
 	@echo "  coverage-html- Same, with an HTML report"
 	@echo "  sanitize     - Build with ASan/UBSan and run tests under them"
+	@echo "  tsan         - Build with ThreadSanitizer and run tests under it"
 	@echo "  docs         - Build documentation with Sphinx"
 	@echo "  release      - Bump version, tag, and prepare release"
 	@echo "  clean        - Remove build artifacts"

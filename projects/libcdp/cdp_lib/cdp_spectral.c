@@ -259,8 +259,29 @@ float* cdp_spectral_synthesize(const cdp_spectral_data *spectral,
         }
     }
 
-    /* Normalize by overlap factor */
-    float norm = 1.0f / (1 << spectral->overlap);
+    /*
+     * Normalize for the window pair and the overlap.
+     *
+     * A Hann window is applied on analysis and again here on synthesis, so
+     * each output sample accumulates sum_k w^2[n - kH], which under the COLA
+     * condition equals sum(w^2)/H. Dividing by that restores unity gain.
+     *
+     * The previous 1/2^overlap accounted only for the hop and ignored the
+     * window energy entirely, leaving a constant sum(w^2)/N = 3/8 (-8.5 dB)
+     * attenuation on every operation that goes through this path -- filters,
+     * parametric EQ, time stretching, morphing. A 0 dB EQ was not a no-op.
+     *
+     * sum(w^2) is computed rather than hardcoded to 3N/8 because
+     * apply_window() divides by (size - 1), which is not exactly the periodic
+     * Hann the closed form assumes.
+     */
+    double w2_sum = 0.0;
+    for (int i = 0; i < fft_size; i++) {
+        double w = 0.5 * (1.0 - cos(2.0 * M_PI * i / (fft_size - 1)));
+        w2_sum += w * w;
+    }
+    float norm = (w2_sum > 0.0) ? (float)(hop_size / w2_sum)
+                                : 1.0f / (1 << spectral->overlap);
     for (size_t i = 0; i < output_len; i++) {
         output[i] *= norm;
     }

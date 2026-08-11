@@ -16,6 +16,7 @@ import ast
 import inspect
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -44,7 +45,7 @@ def stub_params(node: ast.FunctionDef) -> list[tuple[str, str | None]]:
     defaults += list(node.args.defaults)
     return [
         (a.arg, ast.unparse(d) if d is not None else None)
-        for a, d in zip(args, defaults)
+        for a, d in zip(args, defaults, strict=True)
     ]
 
 
@@ -78,9 +79,9 @@ class TestStubCoverage:
         unstubbed = []
         for name in cycdp.__all__:
             obj = getattr(cycdp, name, None)
-            if inspect.isbuiltin(obj) or inspect.isfunction(obj):
-                if name not in STUBS:
-                    unstubbed.append(name)
+            is_function = inspect.isbuiltin(obj) or inspect.isfunction(obj)
+            if is_function and name not in STUBS:
+                unstubbed.append(name)
         assert unstubbed == [], f"exported but not stubbed: {unstubbed}"
 
     def test_no_duplicate_stub_definitions(self):
@@ -108,7 +109,7 @@ class TestStubMatchesRuntime:
         stub = stub_params(STUBS[name])
         real = runtime_params(getattr(core, name))
 
-        for (pname, stub_default), (_, real_default) in zip(stub, real):
+        for (pname, stub_default), (_, real_default) in zip(stub, real, strict=True):
             if stub_default is None:
                 assert real_default is None, (
                     f"{name}({pname}): stub says required, module has "
@@ -123,7 +124,7 @@ class TestStubMatchesRuntime:
             # Stub defaults are source text; compare by value where possible so
             # that constants (WAVE_SINE) compare equal to their int value.
             try:
-                expected = eval(stub_default, vars(cycdp))  # noqa: S307
+                expected = eval(stub_default, vars(cycdp))
             except Exception:  # pragma: no cover - malformed stub default
                 pytest.fail(f"{name}({pname}): unparseable default {stub_default!r}")
 
@@ -192,3 +193,111 @@ class TestPhaseInvertAcceptsBothForms:
 
         result = cycdp.phase_invert(array.array("f", [0.5]), sample_rate=22050)
         assert result.sample_rate == 22050
+
+
+class TestReturnTypesMatchRuntime:
+    """Return annotations cannot be derived from _core.pyx, so verify them.
+
+    Cython `def` functions carry no return-type information, so gen_stubs.py
+    declares them in a table. That table was seeded from the old hand-written
+    stub and inherited four wrong entries: pitch/formants/get_partials return
+    dicts (declared as lists) and fofex_extract_all returns a tuple (declared
+    as Buffer). Nothing caught it -- exactly the defect class the generator
+    exists to prevent, one level up.
+
+    Every function whose declared return is not the trivial `Buffer` is called
+    here and its result checked. All four bugs were in this set.
+    """
+
+    @staticmethod
+    def _sine(seconds: float = 1.0, sr: int = 22050) -> cycdp.Buffer:
+        import array
+        import math
+
+        n = int(sr * seconds)
+        samples = array.array(
+            "f", [0.4 * math.sin(2 * math.pi * 220 * i / sr) for i in range(n)]
+        )
+        return cycdp.Buffer.from_memoryview(samples, 1, sr)
+
+    def cases(self):
+        buf = self._sine()
+        ctx = cycdp.Context()
+        stereo = cycdp.to_stereo(self._sine(0.2))
+        return {
+            "peak": (lambda: cycdp.peak(memoryview(buf)), tuple),
+            "get_peak": (lambda: cycdp.get_peak(ctx, buf), tuple),
+            "split_channels": (lambda: cycdp.split_channels(stereo), list),
+            "pitch": (lambda: cycdp.pitch(buf), dict),
+            "formants": (lambda: cycdp.formants(buf), dict),
+            "get_partials": (lambda: cycdp.get_partials(buf), dict),
+            "fofex_extract": (lambda: cycdp.fofex_extract(buf, 0.1), cycdp.Buffer),
+            "fofex_extract_all": (lambda: cycdp.fofex_extract_all(buf), tuple),
+            "apply_gain": (lambda: cycdp.apply_gain(ctx, buf, 1.0), type(None)),
+            "apply_gain_db": (lambda: cycdp.apply_gain_db(ctx, buf, 0.0), type(None)),
+            "apply_normalize": (
+                lambda: cycdp.apply_normalize(ctx, buf, 1.0),
+                type(None),
+            ),
+            "apply_normalize_db": (
+                lambda: cycdp.apply_normalize_db(ctx, buf, 0.0),
+                type(None),
+            ),
+            "apply_phase_invert": (
+                lambda: cycdp.apply_phase_invert(ctx, buf),
+                type(None),
+            ),
+            "version": (lambda: cycdp.version(), str),
+            "gain_to_db": (lambda: cycdp.gain_to_db(1.0), float),
+            "db_to_gain": (lambda: cycdp.db_to_gain(0.0), float),
+            "write_file": (
+                lambda: cycdp.write_file(
+                    str(Path(tempfile.mkdtemp()) / "out.wav"), buf
+                ),
+                type(None),
+            ),
+        }
+
+    def test_declared_return_types_are_actual_return_types(self):
+        stub_returns = {
+            name: ast.unparse(node.returns)
+            for name, node in STUBS.items()
+            if node.returns is not None
+        }
+
+        # Anything declared as something other than a bare Buffer is where the
+        # mistakes live, so require a runtime case for each.
+        risky = {n for n, r in stub_returns.items() if r != "Buffer"}
+        cases = self.cases()
+        uncovered = risky - set(cases)
+        assert not uncovered, (
+            f"these functions declare a non-Buffer return but have no runtime "
+            f"check here, so a wrong annotation would go unnoticed: "
+            f"{sorted(uncovered)}"
+        )
+
+        base = {
+            "None": type(None),
+            "dict": dict,
+            "list": list,
+            "tuple": tuple,
+            "Buffer": cycdp.Buffer,
+            "str": str,
+            "float": float,
+            "int": int,
+        }
+
+        for name, (call, expected) in cases.items():
+            declared = stub_returns.get(name)
+            if declared is None:
+                continue
+            head = declared.split("[")[0]
+            assert base.get(head) is expected, (
+                f"{name}: stub declares '{declared}' but the runtime case in "
+                f"this test expects {expected.__name__}"
+            )
+            result = call()
+            assert isinstance(result, expected), (
+                f"{name}: stub declares '{declared}' but the function returned "
+                f"{type(result).__name__}"
+            )

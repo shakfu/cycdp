@@ -6,7 +6,8 @@ generated section: tests/test_signatures.py asserts that this file agrees with
 the compiled module, so hand edits will fail the test suite.
 """
 
-from typing import Protocol, Sequence, runtime_checkable
+from collections.abc import Iterator, Sequence
+from typing import Any, Protocol, runtime_checkable
 
 # Type alias for buffer-like objects (numpy arrays, array.array('f'), memoryview, etc.)
 # In practice, any object supporting the buffer protocol with float32 data
@@ -82,8 +83,18 @@ class Context:
         ...
 
 class Buffer:
-    """CDP audio buffer with Python buffer protocol support."""
+    """CDP audio buffer with Python buffer protocol support.
 
+    Satisfies BufferLike: Buffer exports the C-level buffer protocol via
+    __getbuffer__, so memoryview(buf) works and it can be passed anywhere a
+    raw float32 buffer is accepted. It is also iterable through the legacy
+    __getitem__/__len__ protocol. Neither was declared here, so type checkers
+    rejected `peak(buf)`, `memoryview(buf)` and `for x in buf` -- all of which
+    work at runtime.
+    """
+
+    def __buffer__(self, flags: int) -> memoryview: ...
+    def __iter__(self) -> Iterator[float]: ...
     @staticmethod
     def create(frame_count: int, channels: int = 1, sample_rate: int = 44100) -> Buffer:
         """Create a new buffer with allocated memory."""
@@ -476,7 +487,7 @@ def fofex_extract_all(
     fof_count: int = 1,
     min_level_db: float = 0.0,
     window: bool = True,
-) -> Buffer:
+) -> tuple[Buffer, int, int]:
     """Extract all FOFs from audio file."""
     ...
 
@@ -504,7 +515,7 @@ def formants(
     lpc_order: int = 12,
     frame_size: int = 1024,
     hop_size: int = 256,
-) -> list[list[tuple[float, float]]]:
+) -> dict[str, Any]:
     """Extract formant frequencies from audio using LPC analysis."""
     ...
 
@@ -578,7 +589,7 @@ def get_partials(
     freq_tolerance: float = 50.0,
     fft_size: int = 2048,
     hop_size: int = 512,
-) -> list[tuple[float, float, float]]:
+) -> dict[str, Any]:
     """Extract sinusoidal partials from audio using peak tracking."""
     ...
 
@@ -654,7 +665,7 @@ def grain_reorder(
 def grain_repitch(
     buf: Buffer,
     pitch_semitones: float = 0.0,
-    pitch_curve: list[tuple[float, float]] | None = None,
+    pitch_curve: Sequence[tuple[float, float]] | None = None,
     gate: float = 0.1,
     grainsize_ms: float = 50.0,
 ) -> Buffer:
@@ -679,7 +690,7 @@ def grain_reverse(buf: Buffer, gate: float = 0.1, grainsize_ms: float = 50.0) ->
 def grain_timewarp(
     buf: Buffer,
     stretch: float = 1.0,
-    stretch_curve: list[tuple[float, float]] | None = None,
+    stretch_curve: Sequence[tuple[float, float]] | None = None,
     gate: float = 0.1,
     grainsize_ms: float = 50.0,
 ) -> Buffer:
@@ -837,7 +848,7 @@ def pan(buf: Buffer, position: float = 0.0) -> Buffer:
     """Pan a mono buffer to stereo with a static pan position."""
     ...
 
-def pan_envelope(buf: Buffer, points: list[tuple[float, float]]) -> Buffer:
+def pan_envelope(buf: Buffer, points: Sequence[tuple[float, float]]) -> Buffer:
     """Pan a mono buffer to stereo with time-varying position."""
     ...
 
@@ -859,7 +870,7 @@ def pitch(
     max_freq: float = 2000.0,
     frame_size: int = 2048,
     hop_size: int = 512,
-) -> list[tuple[float, float]]:
+) -> dict[str, Any]:
     """Extract pitch contour from audio using YIN algorithm."""
     ...
 
@@ -1169,6 +1180,7 @@ def wrappage(
     jitter: float = 0.1,
     splice_ms: float = 5.0,
     duration: float = 0.0,
+    seed: int = 0,
 ) -> Buffer:
     """Apply wrappage effect - granular texture with stereo spatial distribution."""
     ...

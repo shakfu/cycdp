@@ -21,6 +21,24 @@ cdp_lib_ctx* cdp_lib_init(void) {
     return ctx;
 }
 
+/* Thread-local context storage. See cdp_lib_thread_ctx() in cdp_lib.h. */
+#if defined(_MSC_VER)
+#  define CDP_THREAD_LOCAL __declspec(thread)
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_THREADS__)
+#  define CDP_THREAD_LOCAL _Thread_local
+#else
+#  define CDP_THREAD_LOCAL __thread
+#endif
+
+static CDP_THREAD_LOCAL cdp_lib_ctx* cdp_tls_ctx = NULL;
+
+cdp_lib_ctx* cdp_lib_thread_ctx(void) {
+    if (cdp_tls_ctx == NULL) {
+        cdp_tls_ctx = cdp_lib_init();
+    }
+    return cdp_tls_ctx;
+}
+
 void cdp_lib_cleanup(cdp_lib_ctx* ctx) {
     if (ctx == NULL) return;
     free(ctx);

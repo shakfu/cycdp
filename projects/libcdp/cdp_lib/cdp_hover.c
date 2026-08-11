@@ -22,20 +22,6 @@
 #define MAX_SPLICE_MS 100.0
 
 /*
- * Simple random number generator for hover variations.
- */
-static unsigned int hover_rand_state = 12345;
-
-static double hover_drand(void) {
-    hover_rand_state = hover_rand_state * 1103515245 + 12345;
-    return (double)(hover_rand_state & 0x7fffffff) / (double)0x7fffffff;
-}
-
-static void hover_seed(unsigned int seed) {
-    hover_rand_state = seed;
-}
-
-/*
  * Apply hover effect - zigzag reading at specified frequency.
  */
 cdp_lib_buffer* cdp_lib_hover(cdp_lib_ctx* ctx,
@@ -121,7 +107,7 @@ cdp_lib_buffer* cdp_lib_hover(cdp_lib_ctx* ctx,
     if (base_location >= (int)input_length) base_location = (int)input_length - 1;
 
     /* Seed random generator */
-    hover_seed((unsigned int)(input_length ^ (unsigned int)(frequency * 1000)));
+    cdp_lib_seed(ctx, (uint64_t)(input_length ^ (unsigned int)(frequency * 1000)));
 
     /* Allocate output buffer */
     cdp_lib_buffer* output = cdp_lib_buffer_create(output_length, 1, sample_rate);
@@ -148,14 +134,14 @@ cdp_lib_buffer* cdp_lib_hover(cdp_lib_ctx* ctx,
 
     /* Apply initial random variations */
     if (loc_rand > 0.0) {
-        double randvar = loc_rand * hover_drand();
+        double randvar = loc_rand * cdp_lib_random(ctx);
         randvar = randvar * 2.0 - 1.0;  /* Range -loc_rand to +loc_rand */
         int rand_samps = (int)(traverse * randvar);
         current_location += rand_samps;
     }
 
     if (frq_rand > 0.0) {
-        double randvar = frq_rand * hover_drand();
+        double randvar = frq_rand * cdp_lib_random(ctx);
         randvar = randvar * 2.0 - 1.0;  /* Range -frq_rand to +frq_rand */
         int rand_samps = (int)(traverse * randvar);
         traverse += rand_samps;
@@ -192,14 +178,14 @@ cdp_lib_buffer* cdp_lib_hover(cdp_lib_ctx* ctx,
         int next_location = base_location;
 
         if (loc_rand > 0.0) {
-            double randvar = loc_rand * hover_drand();
+            double randvar = loc_rand * cdp_lib_random(ctx);
             randvar = randvar * 2.0 - 1.0;
             int rand_samps = (int)(next_traverse * randvar);
             next_location += rand_samps;
         }
 
         if (frq_rand > 0.0) {
-            double randvar = frq_rand * hover_drand();
+            double randvar = frq_rand * cdp_lib_random(ctx);
             randvar = randvar * 2.0 - 1.0;
             int rand_samps = (int)(next_traverse * randvar);
             next_traverse += rand_samps;

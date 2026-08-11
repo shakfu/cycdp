@@ -46,6 +46,7 @@ cdp_lib_buffer* cdp_lib_wrappage(cdp_lib_ctx* ctx,
                                   double spread,
                                   double jitter,
                                   double splice_ms,
-                                  double duration);
+                                  double duration,
+                                  unsigned int seed);
 
 #endif /* CDP_WRAPPAGE_H */

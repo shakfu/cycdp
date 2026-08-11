@@ -21,29 +21,15 @@
 #define MAX_FLUTTER_DEPTH 16.0
 
 /*
- * Simple random number generator for permutation.
- */
-static unsigned int flutter_rand_state = 12345;
-
-static double flutter_rand(void) {
-    flutter_rand_state = flutter_rand_state * 1103515245 + 12345;
-    return (double)(flutter_rand_state & 0x7fffffff) / (double)0x7fffffff;
-}
-
-static void flutter_seed(unsigned int seed) {
-    flutter_rand_state = seed;
-}
-
-/*
  * Shuffle an array using Fisher-Yates with constraint that
  * first element doesn't equal last_val (avoids repetition at boundaries).
  */
-static void shuffle_with_constraint(int* arr, int n, int last_val) {
+static void shuffle_with_constraint(cdp_lib_ctx* ctx, int* arr, int n, int last_val) {
     int attempts = 0;
     do {
         /* Fisher-Yates shuffle */
         for (int i = n - 1; i > 0; i--) {
-            int j = (int)(flutter_rand() * (i + 1));
+            int j = (int)(cdp_lib_random(ctx) * (i + 1));
             int temp = arr[i];
             arr[i] = arr[j];
             arr[j] = temp;
@@ -137,7 +123,7 @@ cdp_lib_buffer* cdp_lib_flutter(cdp_lib_ctx* ctx,
 
     /* Seed random generator */
     if (randomize) {
-        flutter_seed((unsigned int)(input->length ^ (unsigned int)(frequency * 1000)));
+        cdp_lib_seed(ctx, (uint64_t)(input->length ^ (unsigned int)(frequency * 1000)));
     }
 
     size_t num_frames = stereo->length / 2;
@@ -162,7 +148,7 @@ cdp_lib_buffer* cdp_lib_flutter(cdp_lib_ctx* ctx,
 
             /* Randomize order if requested and we've completed a full cycle */
             if (current_set == 0 && randomize) {
-                shuffle_with_constraint(channel_order, 2, last_set);
+                shuffle_with_constraint(ctx, channel_order, 2, last_set);
                 last_set = channel_order[1];
             }
         }
@@ -359,7 +345,7 @@ cdp_lib_buffer* cdp_lib_flutter_multi(cdp_lib_ctx* ctx,
 
     /* Seed random generator */
     if (randomize) {
-        flutter_seed((unsigned int)(input->length ^ (unsigned int)(frequency * 1000)));
+        cdp_lib_seed(ctx, (uint64_t)(input->length ^ (unsigned int)(frequency * 1000)));
     }
 
     int sample_rate = input->sample_rate;
@@ -391,7 +377,7 @@ cdp_lib_buffer* cdp_lib_flutter_multi(cdp_lib_ctx* ctx,
             current_set++;
             if (current_set >= num_sets) {
                 if (randomize) {
-                    shuffle_with_constraint(set_order, num_sets, last_set);
+                    shuffle_with_constraint(ctx, set_order, num_sets, last_set);
                     last_set = set_order[num_sets - 1];
                 }
                 current_set = 0;

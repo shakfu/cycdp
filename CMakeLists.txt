@@ -18,6 +18,22 @@ find_package(Python REQUIRED COMPONENTS Interpreter Development.Module)
 # Never enable for released wheels: it is slow and changes the ABI expectations
 # of the process it loads into.
 option(CYCDP_SANITIZE "Build with AddressSanitizer and UBSan" OFF)
+# ThreadSanitizer is a separate build: TSan and ASan cannot be combined, and
+# TSan is what validates the GIL-releasing processing calls (M1). It caught the
+# ctx->prng_state race when the library context was still a shared singleton.
+option(CYCDP_TSAN "Build with ThreadSanitizer" OFF)
+
+if(CYCDP_SANITIZE AND CYCDP_TSAN)
+    message(FATAL_ERROR "CYCDP_SANITIZE and CYCDP_TSAN are mutually exclusive")
+endif()
+
+if(CYCDP_TSAN)
+    if(MSVC)
+        message(FATAL_ERROR "CYCDP_TSAN is not supported with MSVC")
+    endif()
+    add_compile_options(-fsanitize=thread -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=thread)
+endif()
 
 if(CYCDP_SANITIZE)
     if(MSVC)

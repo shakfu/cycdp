@@ -1019,6 +1019,22 @@ cdp_lib_buffer* cdp_lib_tesselate(cdp_lib_ctx* ctx,
                                    double transform,
                                    unsigned int seed);
 
+/*
+ * Return this thread's context, creating it on first use.
+ *
+ * The Python bindings release the GIL around processing calls, so a single
+ * shared context would be a data race: every call writes ctx->error_msg and
+ * draws from ctx->prng_state, so two concurrent operations would corrupt each
+ * other's error reporting and consume each other's seeded random stream.
+ *
+ * One context per thread costs ~528 bytes and is not freed when the thread
+ * exits; that is bounded by thread count and avoids needing a destructor
+ * callback on every platform.
+ *
+ * Returns: The calling thread's context, or NULL if allocation failed.
+ */
+cdp_lib_ctx* cdp_lib_thread_ctx(void);
+
 #ifdef __cplusplus
 }
 #endif

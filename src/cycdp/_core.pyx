@@ -1102,7 +1102,7 @@ def interleave(list buffers not None):
 # CDP Library - Native spectral processing (no subprocess)
 # =============================================================================
 
-cdef extern from "cdp_lib.h":
+cdef extern from "cdp_lib.h" nogil:
     ctypedef struct cdp_lib_ctx:
         pass
 
@@ -1113,6 +1113,7 @@ cdef extern from "cdp_lib.h":
         int sample_rate
 
     cdp_lib_ctx* cdp_lib_init()
+    cdp_lib_ctx* cdp_lib_thread_ctx()
     void cdp_lib_cleanup(cdp_lib_ctx* ctx)
     const char* cdp_lib_get_error(cdp_lib_ctx* ctx)
 
@@ -1273,7 +1274,7 @@ cdef extern from "cdp_lib.h":
                                          double mix,
                                          int fft_size)
 
-cdef extern from "cdp_morph_native.h":
+cdef extern from "cdp_morph_native.h" nogil:
     # Native morph wrappers (original CDP algorithms)
     cdp_lib_buffer* cdp_morph_glide_native(cdp_lib_ctx* ctx,
                                             const cdp_lib_buffer* input1,
@@ -1303,7 +1304,7 @@ cdef extern from "cdp_morph_native.h":
                                             double stagger,
                                             int fft_size)
 
-cdef extern from "cdp_lib.h":
+cdef extern from "cdp_lib.h" nogil:
     # Analysis data structures
     ctypedef struct cdp_pitch_data:
         float *pitch
@@ -1367,7 +1368,7 @@ cdef extern from "cdp_lib.h":
                                             int fft_size,
                                             int hop_size)
 
-cdef extern from "cdp_envelope.h":
+cdef extern from "cdp_envelope.h" nogil:
     int CDP_FADE_LINEAR
     int CDP_FADE_EXPONENTIAL
 
@@ -1389,7 +1390,7 @@ cdef extern from "cdp_envelope.h":
                                     double attack_gain,
                                     double attack_time)
 
-cdef extern from "cdp_distort.h":
+cdef extern from "cdp_distort.h" nogil:
     cdp_lib_buffer* cdp_lib_distort_overload(cdp_lib_ctx* ctx,
                                               const cdp_lib_buffer* input,
                                               double clip_level,
@@ -1446,7 +1447,7 @@ cdef extern from "cdp_distort.h":
                                           int mode,
                                           int waveset_count)
 
-cdef extern from "cdp_reverb.h":
+cdef extern from "cdp_reverb.h" nogil:
     cdp_lib_buffer* cdp_lib_reverb(cdp_lib_ctx* ctx,
                                     const cdp_lib_buffer* input,
                                     double mix,
@@ -1455,7 +1456,7 @@ cdef extern from "cdp_reverb.h":
                                     double lpfreq,
                                     double predelay)
 
-cdef extern from "cdp_granular.h":
+cdef extern from "cdp_granular.h" nogil:
     cdp_lib_buffer* cdp_lib_brassage(cdp_lib_ctx* ctx,
                                       const cdp_lib_buffer* input,
                                       double velocity,
@@ -1516,7 +1517,7 @@ cdef extern from "cdp_granular.h":
                                            double amp_decay,
                                            unsigned int seed)
 
-cdef extern from "cdp_granular_ext.h":
+cdef extern from "cdp_granular_ext.h" nogil:
     # Extended granular operations
     cdp_lib_buffer* cdp_lib_grain_reorder(cdp_lib_ctx* ctx,
                                            const cdp_lib_buffer* input,
@@ -1580,7 +1581,7 @@ cdef extern from "cdp_granular_ext.h":
                                              double grainsize_ms,
                                              unsigned int seed)
 
-cdef extern from "cdp_granular.h":
+cdef extern from "cdp_granular.h" nogil:
     # Spectral operations
     cdp_lib_buffer* cdp_lib_spectral_focus(cdp_lib_ctx* ctx,
                                             const cdp_lib_buffer* input,
@@ -1605,7 +1606,7 @@ cdef extern from "cdp_granular.h":
                                             double threshold_db,
                                             int fft_size)
 
-cdef extern from "cdp_experimental.h":
+cdef extern from "cdp_experimental.h" nogil:
     # Experimental operations
     cdp_lib_buffer* cdp_lib_strange(cdp_lib_ctx* ctx,
                                      const cdp_lib_buffer* input,
@@ -1679,7 +1680,7 @@ cdef extern from "cdp_experimental.h":
                                        double transform,
                                        unsigned int seed)
 
-cdef extern from "cdp_playback.h":
+cdef extern from "cdp_playback.h" nogil:
     # Playback/Time manipulation operations
     cdp_lib_buffer* cdp_lib_zigzag(cdp_lib_ctx* ctx,
                                     const cdp_lib_buffer* input,
@@ -1773,7 +1774,7 @@ cdef extern from "cdp_playback.h":
                                    double phase_offset)
 
 
-cdef extern from "cdp_synth.h":
+cdef extern from "cdp_synth.h" nogil:
     cdp_lib_buffer* cdp_lib_synth_wave(cdp_lib_ctx* ctx,
                                         int waveform,
                                         double frequency,
@@ -1808,7 +1809,7 @@ cdef extern from "cdp_synth.h":
                                          int channels)
 
 
-cdef extern from "cdp_psow.h":
+cdef extern from "cdp_psow.h" nogil:
     cdp_lib_buffer* cdp_lib_psow_stretch(cdp_lib_ctx* ctx,
                                           const cdp_lib_buffer* input,
                                           double stretch_factor,
@@ -1834,7 +1835,7 @@ cdef extern from "cdp_psow.h":
                                          double end_dur)
 
 
-cdef extern from "cdp_fofex.h":
+cdef extern from "cdp_fofex.h" nogil:
     cdp_lib_buffer* cdp_lib_fofex_extract(cdp_lib_ctx* ctx,
                                            const cdp_lib_buffer* input,
                                            double time,
@@ -1862,7 +1863,7 @@ cdef extern from "cdp_fofex.h":
                                            int preserve_formants)
 
 
-cdef extern from "cdp_flutter.h":
+cdef extern from "cdp_flutter.h" nogil:
     cdp_lib_buffer* cdp_lib_flutter(cdp_lib_ctx* ctx,
                                      const cdp_lib_buffer* input,
                                      double frequency,
@@ -1879,7 +1880,7 @@ cdef extern from "cdp_flutter.h":
                                            int randomize)
 
 
-cdef extern from "cdp_hover.h":
+cdef extern from "cdp_hover.h" nogil:
     cdp_lib_buffer* cdp_lib_hover(cdp_lib_ctx* ctx,
                                    const cdp_lib_buffer* input,
                                    double frequency,
@@ -1890,13 +1891,13 @@ cdef extern from "cdp_hover.h":
                                    double duration)
 
 
-cdef extern from "cdp_constrict.h":
+cdef extern from "cdp_constrict.h" nogil:
     cdp_lib_buffer* cdp_lib_constrict(cdp_lib_ctx* ctx,
                                        const cdp_lib_buffer* input,
                                        double constriction)
 
 
-cdef extern from "cdp_phase.h":
+cdef extern from "cdp_phase.h" nogil:
     cdp_lib_buffer* cdp_lib_phase_invert(cdp_lib_ctx* ctx,
                                           const cdp_lib_buffer* input)
     cdp_lib_buffer* cdp_lib_phase_stereo(cdp_lib_ctx* ctx,
@@ -1904,7 +1905,7 @@ cdef extern from "cdp_phase.h":
                                           double transfer)
 
 
-cdef extern from "cdp_wrappage.h":
+cdef extern from "cdp_wrappage.h" nogil:
     cdp_lib_buffer* cdp_lib_wrappage(cdp_lib_ctx* ctx,
                                       const cdp_lib_buffer* input,
                                       double grain_size,
@@ -1914,7 +1915,8 @@ cdef extern from "cdp_wrappage.h":
                                       double spread,
                                       double jitter,
                                       double splice_ms,
-                                      double duration)
+                                      double duration,
+                                      unsigned int seed)
 
 
 # Waveform type constants
@@ -1925,17 +1927,20 @@ WAVE_RAMP = 3
 WAVE_TRIANGLE = 4
 
 # Global CDP library context (lazily initialized)
-cdef cdp_lib_ctx* _cdp_lib_ctx = NULL
-
-
 cdef cdp_lib_ctx* _get_cdp_lib_ctx() except NULL:
-    """Get or create the global CDP library context."""
-    global _cdp_lib_ctx
-    if _cdp_lib_ctx is NULL:
-        _cdp_lib_ctx = cdp_lib_init()
-        if _cdp_lib_ctx is NULL:
-            raise MemoryError("Failed to initialize CDP library")
-    return _cdp_lib_ctx
+    """Get this thread's CDP library context.
+
+    Per-thread, not a shared singleton: processing calls release the GIL, and
+    every call writes ctx->error_msg and draws from ctx->prng_state. Sharing
+    one context across threads would let concurrent operations corrupt each
+    other's error reporting and consume each other's seeded random stream.
+    """
+    cdef cdp_lib_ctx* ctx
+    with nogil:
+        ctx = cdp_lib_thread_ctx()
+    if ctx is NULL:
+        raise MemoryError("Failed to initialize CDP library")
+    return ctx
 
 
 cdef cdp_lib_buffer* _buffer_to_cdp_lib(Buffer buf) except NULL:
@@ -1953,19 +1958,55 @@ cdef cdp_lib_buffer* _buffer_to_cdp_lib(Buffer buf) except NULL:
     return lib_buf
 
 
-cdef Buffer _cdp_lib_to_buffer(cdp_lib_buffer* lib_buf):
-    """Convert a cdp_lib_buffer to a cycdp Buffer."""
-    cdef Buffer result = Buffer.create(
-        lib_buf.length // lib_buf.channels,
-        lib_buf.channels,
-        lib_buf.sample_rate)
+cdef int _buffer_pair_to_cdp_lib(Buffer first, Buffer second,
+                                 cdp_lib_buffer** out_first,
+                                 cdp_lib_buffer** out_second) except -1:
+    """Convert two Buffers, releasing the first if the second fails.
 
-    # Copy data
+    Two-input operations previously converted both on consecutive lines, so a
+    MemoryError on the second leaked the first.
+    """
+    out_first[0] = _buffer_to_cdp_lib(first)
+    try:
+        out_second[0] = _buffer_to_cdp_lib(second)
+    except:
+        cdp_lib_buffer_free(out_first[0])
+        out_first[0] = NULL
+        raise
+    return 0
+
+
+cdef Buffer _take_cdp_lib_buffer(cdp_lib_buffer* lib_buf):
+    """Convert a cdp_lib_buffer to a cycdp Buffer, taking ownership of it.
+
+    lib_buf is freed on every path, including when Buffer.create raises
+    MemoryError. Callers previously freed it on the line *after* the
+    conversion, so a failed allocation leaked the output buffer -- which is
+    often the larger of the two, and which happens exactly when memory is
+    already scarce.
+
+    Pass ownership and do not free the pointer afterwards.
+    """
+    cdef Buffer result
     cdef size_t i
-    for i in range(lib_buf.length):
-        result._buf.samples[i] = lib_buf.data[i]
+    try:
+        if lib_buf is NULL:
+            raise CDPError(-1, "No output buffer produced")
+        if lib_buf.channels <= 0:
+            raise CDPError(-1, "Output buffer has invalid channel count")
 
-    return result
+        result = Buffer.create(
+            lib_buf.length // lib_buf.channels,
+            lib_buf.channels,
+            lib_buf.sample_rate)
+
+        # Copy data
+        for i in range(lib_buf.length):
+            result._buf.samples[i] = lib_buf.data[i]
+
+        return result
+    finally:
+        cdp_lib_buffer_free(lib_buf)
 
 
 def time_stretch(Buffer buf not None, double factor, int fft_size=1024, int overlap=3):
@@ -1992,8 +2033,10 @@ def time_stretch(Buffer buf not None, double factor, int fft_size=1024, int over
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_time_stretch(
-        ctx, input_buf, factor, fft_size, overlap)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_time_stretch(
+            ctx, input_buf, factor, fft_size, overlap)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2001,8 +2044,7 @@ def time_stretch(Buffer buf not None, double factor, int fft_size=1024, int over
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Time stretch failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2027,8 +2069,10 @@ def spectral_blur(Buffer buf not None, double blur_time, int fft_size=1024):
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_spectral_blur(
-        ctx, input_buf, blur_time, fft_size)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_spectral_blur(
+            ctx, input_buf, blur_time, fft_size)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2036,8 +2080,7 @@ def spectral_blur(Buffer buf not None, double blur_time, int fft_size=1024):
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Spectral blur failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2064,7 +2107,9 @@ def modify_speed(Buffer buf not None, double speed_factor):
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_speed(ctx, input_buf, speed_factor)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_speed(ctx, input_buf, speed_factor)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2072,8 +2117,7 @@ def modify_speed(Buffer buf not None, double speed_factor):
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Speed change failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2099,7 +2143,9 @@ def pitch_shift(Buffer buf not None, double semitones, int fft_size=1024):
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_pitch_shift(ctx, input_buf, semitones, fft_size)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_pitch_shift(ctx, input_buf, semitones, fft_size)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2107,8 +2153,7 @@ def pitch_shift(Buffer buf not None, double semitones, int fft_size=1024):
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Pitch shift failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2132,7 +2177,9 @@ def spectral_shift(Buffer buf not None, double shift_hz, int fft_size=1024):
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_spectral_shift(ctx, input_buf, shift_hz, fft_size)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_spectral_shift(ctx, input_buf, shift_hz, fft_size)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2140,8 +2187,7 @@ def spectral_shift(Buffer buf not None, double shift_hz, int fft_size=1024):
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Spectral shift failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2171,8 +2217,10 @@ def spectral_stretch(Buffer buf not None, double max_stretch,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_spectral_stretch(
-        ctx, input_buf, max_stretch, freq_divide, exponent, fft_size)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_spectral_stretch(
+            ctx, input_buf, max_stretch, freq_divide, exponent, fft_size)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2180,8 +2228,7 @@ def spectral_stretch(Buffer buf not None, double max_stretch,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Spectral stretch failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2208,8 +2255,10 @@ def filter_lowpass(Buffer buf not None, double cutoff_freq,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_filter_lowpass(
-        ctx, input_buf, cutoff_freq, attenuation_db, fft_size)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_filter_lowpass(
+            ctx, input_buf, cutoff_freq, attenuation_db, fft_size)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2217,8 +2266,7 @@ def filter_lowpass(Buffer buf not None, double cutoff_freq,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Lowpass filter failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2245,8 +2293,10 @@ def filter_highpass(Buffer buf not None, double cutoff_freq,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_filter_highpass(
-        ctx, input_buf, cutoff_freq, attenuation_db, fft_size)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_filter_highpass(
+            ctx, input_buf, cutoff_freq, attenuation_db, fft_size)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2254,8 +2304,7 @@ def filter_highpass(Buffer buf not None, double cutoff_freq,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Highpass filter failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2285,8 +2334,10 @@ def filter_bandpass(Buffer buf not None, double low_freq, double high_freq,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_filter_bandpass(
-        ctx, input_buf, low_freq, high_freq, attenuation_db, fft_size)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_filter_bandpass(
+            ctx, input_buf, low_freq, high_freq, attenuation_db, fft_size)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2294,8 +2345,7 @@ def filter_bandpass(Buffer buf not None, double low_freq, double high_freq,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Bandpass filter failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2325,8 +2375,10 @@ def filter_notch(Buffer buf not None, double center_freq, double width_hz,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_filter_notch(
-        ctx, input_buf, center_freq, width_hz, attenuation_db, fft_size)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_filter_notch(
+            ctx, input_buf, center_freq, width_hz, attenuation_db, fft_size)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2334,8 +2386,7 @@ def filter_notch(Buffer buf not None, double center_freq, double width_hz,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Notch filter failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2362,8 +2413,10 @@ def gate(Buffer buf not None, double threshold_db, double attack_ms=1.0,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_gate(
-        ctx, input_buf, threshold_db, attack_ms, release_ms, hold_ms)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_gate(
+            ctx, input_buf, threshold_db, attack_ms, release_ms, hold_ms)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2371,8 +2424,7 @@ def gate(Buffer buf not None, double threshold_db, double attack_ms=1.0,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Gate failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2401,8 +2453,10 @@ def bitcrush(Buffer buf not None, int bit_depth=8, int downsample=1):
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_bitcrush(
-        ctx, input_buf, bit_depth, downsample)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_bitcrush(
+            ctx, input_buf, bit_depth, downsample)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2410,8 +2464,7 @@ def bitcrush(Buffer buf not None, int bit_depth=8, int downsample=1):
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Bitcrush failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2440,7 +2493,9 @@ def ring_mod(Buffer buf not None, double freq, double mix=1.0):
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_ring_mod(ctx, input_buf, freq, mix)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_ring_mod(ctx, input_buf, freq, mix)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2448,8 +2503,7 @@ def ring_mod(Buffer buf not None, double freq, double mix=1.0):
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Ring modulation failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2479,7 +2533,9 @@ def delay(Buffer buf not None, double delay_ms, double feedback=0.3, double mix=
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_delay(ctx, input_buf, delay_ms, feedback, mix)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_delay(ctx, input_buf, delay_ms, feedback, mix)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2487,8 +2543,7 @@ def delay(Buffer buf not None, double delay_ms, double feedback=0.3, double mix=
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Delay failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2520,7 +2575,9 @@ def chorus(Buffer buf not None, double rate=1.5, double depth_ms=5.0, double mix
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_chorus(ctx, input_buf, rate, depth_ms, mix)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_chorus(ctx, input_buf, rate, depth_ms, mix)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2528,8 +2585,7 @@ def chorus(Buffer buf not None, double rate=1.5, double depth_ms=5.0, double mix
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Chorus failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2565,8 +2621,10 @@ def flanger(Buffer buf not None, double rate=0.5, double depth_ms=3.0,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_flanger(
-        ctx, input_buf, rate, depth_ms, feedback, mix)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_flanger(
+            ctx, input_buf, rate, depth_ms, feedback, mix)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2574,8 +2632,7 @@ def flanger(Buffer buf not None, double rate=0.5, double depth_ms=3.0,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Flanger failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2611,8 +2668,10 @@ def eq_parametric(Buffer buf not None, double center_freq, double gain_db,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_eq_parametric(
-        ctx, input_buf, center_freq, gain_db, q, fft_size)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_eq_parametric(
+            ctx, input_buf, center_freq, gain_db, q, fft_size)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2620,8 +2679,7 @@ def eq_parametric(Buffer buf not None, double center_freq, double gain_db,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Parametric EQ failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2654,8 +2712,10 @@ def envelope_follow(Buffer buf not None, double attack_ms=10.0,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_envelope_follow(
-        ctx, input_buf, attack_ms, release_ms, mode_int)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_envelope_follow(
+            ctx, input_buf, attack_ms, release_ms, mode_int)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2663,8 +2723,7 @@ def envelope_follow(Buffer buf not None, double attack_ms=10.0,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Envelope follow failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2689,11 +2748,14 @@ def envelope_apply(Buffer buf not None, Buffer envelope not None, double depth=1
         raise ValueError("depth must be 0.0 to 1.0")
 
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
-    cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
-    cdef cdp_lib_buffer* env_buf = _buffer_to_cdp_lib(envelope)
+    cdef cdp_lib_buffer* input_buf
+    cdef cdp_lib_buffer* env_buf
+    _buffer_pair_to_cdp_lib(buf, envelope, &input_buf, &env_buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_envelope_apply(
-        ctx, input_buf, env_buf, depth)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_envelope_apply(
+            ctx, input_buf, env_buf, depth)
 
     cdp_lib_buffer_free(input_buf)
     cdp_lib_buffer_free(env_buf)
@@ -2702,8 +2764,7 @@ def envelope_apply(Buffer buf not None, Buffer envelope not None, double depth=1
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Envelope apply failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2738,8 +2799,10 @@ def compressor(Buffer buf not None, double threshold_db=-20.0, double ratio=4.0,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_compressor(
-        ctx, input_buf, threshold_db, ratio, attack_ms, release_ms, makeup_gain_db)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_compressor(
+            ctx, input_buf, threshold_db, ratio, attack_ms, release_ms, makeup_gain_db)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2747,8 +2810,7 @@ def compressor(Buffer buf not None, double threshold_db=-20.0, double ratio=4.0,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Compressor failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2779,8 +2841,10 @@ def limiter(Buffer buf not None, double threshold_db=-0.1,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_limiter(
-        ctx, input_buf, threshold_db, attack_ms, release_ms)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_limiter(
+            ctx, input_buf, threshold_db, attack_ms, release_ms)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2788,8 +2852,7 @@ def limiter(Buffer buf not None, double threshold_db=-0.1,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Limiter failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2829,8 +2892,10 @@ def dovetail(Buffer buf not None, double fade_in_dur, double fade_out_dur,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_dovetail(
-        ctx, input_buf, fade_in_dur, fade_out_dur, fade_in_type, fade_out_type)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_dovetail(
+            ctx, input_buf, fade_in_dur, fade_out_dur, fade_in_type, fade_out_type)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2838,8 +2903,7 @@ def dovetail(Buffer buf not None, double fade_in_dur, double fade_out_dur,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Dovetail failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2862,7 +2926,9 @@ def tremolo(Buffer buf not None, double freq, double depth, double gain=1.0):
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_tremolo(ctx, input_buf, freq, depth, gain)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_tremolo(ctx, input_buf, freq, depth, gain)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2870,8 +2936,7 @@ def tremolo(Buffer buf not None, double freq, double depth, double gain=1.0):
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Tremolo failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2893,7 +2958,9 @@ def attack(Buffer buf not None, double attack_gain, double attack_time):
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_attack(ctx, input_buf, attack_gain, attack_time)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_attack(ctx, input_buf, attack_gain, attack_time)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2901,8 +2968,7 @@ def attack(Buffer buf not None, double attack_gain, double attack_time):
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Attack modification failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2928,7 +2994,9 @@ def distort_overload(Buffer buf not None, double clip_level, double depth=0.5):
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_distort_overload(ctx, input_buf, clip_level, depth)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_distort_overload(ctx, input_buf, clip_level, depth)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2936,8 +3004,7 @@ def distort_overload(Buffer buf not None, double clip_level, double depth=0.5):
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Distort overload failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2958,7 +3025,9 @@ def distort_reverse(Buffer buf not None, int cycle_count):
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_distort_reverse(ctx, input_buf, cycle_count)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_distort_reverse(ctx, input_buf, cycle_count)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2966,8 +3035,7 @@ def distort_reverse(Buffer buf not None, int cycle_count):
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Distort reverse failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -2991,7 +3059,9 @@ def distort_fractal(Buffer buf not None, double scaling, double loudness=1.0):
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_distort_fractal(ctx, input_buf, scaling, loudness)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_distort_fractal(ctx, input_buf, scaling, loudness)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -2999,8 +3069,7 @@ def distort_fractal(Buffer buf not None, double scaling, double loudness=1.0):
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Distort fractal failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -3022,7 +3091,9 @@ def distort_shuffle(Buffer buf not None, int chunk_count, unsigned int seed=0):
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_distort_shuffle(ctx, input_buf, chunk_count, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_distort_shuffle(ctx, input_buf, chunk_count, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -3030,8 +3101,7 @@ def distort_shuffle(Buffer buf not None, int chunk_count, unsigned int seed=0):
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Distort shuffle failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -3064,9 +3134,11 @@ def distort_cut(Buffer buf not None, int cycle_count=4, int cycle_step=4,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_distort_cut(
-        ctx, input_buf, cycle_count, cycle_step, exponent, min_level
-    )
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_distort_cut(
+            ctx, input_buf, cycle_count, cycle_step, exponent, min_level
+        )
 
     cdp_lib_buffer_free(input_buf)
 
@@ -3074,8 +3146,7 @@ def distort_cut(Buffer buf not None, int cycle_count=4, int cycle_step=4,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Distort cut failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -3119,10 +3190,12 @@ def distort_mark(Buffer buf not None, markers not None, double unit_ms=10.0,
     for i in range(marker_count):
         marker_array[i] = markers[i]
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_distort_mark(
-        ctx, input_buf, marker_array, marker_count, unit_ms, stretch, random,
-        1 if flip_phase else 0, seed
-    )
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_distort_mark(
+            ctx, input_buf, marker_array, marker_count, unit_ms, stretch, random,
+            1 if flip_phase else 0, seed
+        )
 
     free(marker_array)
     cdp_lib_buffer_free(input_buf)
@@ -3131,8 +3204,7 @@ def distort_mark(Buffer buf not None, markers not None, double unit_ms=10.0,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Distort mark failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -3163,9 +3235,11 @@ def distort_repeat(Buffer buf not None, int multiplier=2, int cycle_count=1,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_distort_repeat(
-        ctx, input_buf, multiplier, cycle_count, skip_cycles, splice_ms, mode
-    )
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_distort_repeat(
+            ctx, input_buf, multiplier, cycle_count, skip_cycles, splice_ms, mode
+        )
 
     cdp_lib_buffer_free(input_buf)
 
@@ -3173,8 +3247,7 @@ def distort_repeat(Buffer buf not None, int multiplier=2, int cycle_count=1,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Distort repeat failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -3202,9 +3275,11 @@ def distort_shift(Buffer buf not None, int group_size=1, int shift=1, int mode=0
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_distort_shift(
-        ctx, input_buf, group_size, shift, mode
-    )
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_distort_shift(
+            ctx, input_buf, group_size, shift, mode
+        )
 
     cdp_lib_buffer_free(input_buf)
 
@@ -3212,8 +3287,7 @@ def distort_shift(Buffer buf not None, int group_size=1, int shift=1, int mode=0
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Distort shift failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -3243,9 +3317,11 @@ def distort_warp(Buffer buf not None, double warp=0.001, int mode=0, int waveset
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_distort_warp(
-        ctx, input_buf, warp, mode, waveset_count
-    )
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_distort_warp(
+            ctx, input_buf, warp, mode, waveset_count
+        )
 
     cdp_lib_buffer_free(input_buf)
 
@@ -3253,8 +3329,7 @@ def distort_warp(Buffer buf not None, double warp=0.001, int mode=0, int waveset
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Distort warp failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -3286,8 +3361,10 @@ def reverb(Buffer buf not None, double mix=0.5, double decay_time=2.0,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_reverb(
-        ctx, input_buf, mix, decay_time, damping, lpfreq, predelay)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_reverb(
+            ctx, input_buf, mix, decay_time, damping, lpfreq, predelay)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -3295,8 +3372,7 @@ def reverb(Buffer buf not None, double mix=0.5, double decay_time=2.0,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Reverb failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -3332,9 +3408,11 @@ def brassage(Buffer buf not None, double velocity=1.0, double density=1.0,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_brassage(
-        ctx, input_buf, velocity, density, grainsize_ms,
-        scatter, pitch_shift, amp_variation, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_brassage(
+            ctx, input_buf, velocity, density, grainsize_ms,
+            scatter, pitch_shift, amp_variation, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -3342,8 +3420,7 @@ def brassage(Buffer buf not None, double velocity=1.0, double density=1.0,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Brassage failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -3382,9 +3459,11 @@ def freeze(Buffer buf not None, double start_time, double end_time,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_freeze(
-        ctx, input_buf, start_time, end_time, duration,
-        delay, randomize, pitch_scatter, amp_cut, gain, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_freeze(
+            ctx, input_buf, start_time, end_time, duration,
+            delay, randomize, pitch_scatter, amp_cut, gain, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -3392,8 +3471,7 @@ def freeze(Buffer buf not None, double start_time, double end_time,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Freeze failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -3424,8 +3502,10 @@ def grain_cloud(Buffer buf not None, double gate=0.1, double grainsize_ms=50.0,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_grain_cloud(
-        ctx, input_buf, gate, grainsize_ms, density, duration, scatter, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_grain_cloud(
+            ctx, input_buf, gate, grainsize_ms, density, duration, scatter, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -3433,8 +3513,7 @@ def grain_cloud(Buffer buf not None, double gate=0.1, double grainsize_ms=50.0,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Grain cloud failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -3465,8 +3544,10 @@ def grain_extend(Buffer buf not None, double grainsize_ms=15.0, double trough=0.
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_grain_extend(
-        ctx, input_buf, grainsize_ms, trough, extension, start_time, end_time, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_grain_extend(
+            ctx, input_buf, grainsize_ms, trough, extension, start_time, end_time, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -3474,8 +3555,7 @@ def grain_extend(Buffer buf not None, double grainsize_ms=15.0, double trough=0.
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Grain extend failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -3506,8 +3586,10 @@ def texture_simple(Buffer buf not None, double duration=5.0, double density=5.0,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_texture_simple(
-        ctx, input_buf, duration, density, pitch_range, amp_range, spatial_range, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_texture_simple(
+            ctx, input_buf, duration, density, pitch_range, amp_range, spatial_range, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -3515,8 +3597,7 @@ def texture_simple(Buffer buf not None, double duration=5.0, double density=5.0,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Texture simple failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -3549,9 +3630,11 @@ def texture_multi(Buffer buf not None, double duration=5.0, double density=2.0,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_texture_multi(
-        ctx, input_buf, duration, density, group_size, group_spread,
-        pitch_range, pitch_center, amp_decay, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_texture_multi(
+            ctx, input_buf, duration, density, group_size, group_spread,
+            pitch_range, pitch_center, amp_decay, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -3559,8 +3642,7 @@ def texture_multi(Buffer buf not None, double duration=5.0, double density=2.0,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Texture multi failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -3606,8 +3688,10 @@ def grain_reorder(Buffer buf not None, order=None, double gate=0.1,
         order_view = order_arr
         order_ptr = &order_view[0]
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_grain_reorder(
-        ctx, input_buf, order_ptr, order_count, gate, grainsize_ms, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_grain_reorder(
+            ctx, input_buf, order_ptr, order_count, gate, grainsize_ms, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -3615,8 +3699,7 @@ def grain_reorder(Buffer buf not None, order=None, double gate=0.1,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Grain reorder failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -3669,9 +3752,11 @@ def grain_rerhythm(Buffer buf not None, times=None, ratios=None,
         ratios_view = ratios_arr
         ratios_ptr = &ratios_view[0]
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_grain_rerhythm(
-        ctx, input_buf, times_ptr, time_count, ratios_ptr, ratio_count,
-        gate, grainsize_ms, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_grain_rerhythm(
+            ctx, input_buf, times_ptr, time_count, ratios_ptr, ratio_count,
+            gate, grainsize_ms, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -3679,8 +3764,7 @@ def grain_rerhythm(Buffer buf not None, times=None, ratios=None,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Grain rerhythm failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -3705,8 +3789,10 @@ def grain_reverse(Buffer buf not None, double gate=0.1, double grainsize_ms=50.0
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_grain_reverse(
-        ctx, input_buf, gate, grainsize_ms)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_grain_reverse(
+            ctx, input_buf, gate, grainsize_ms)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -3714,8 +3800,7 @@ def grain_reverse(Buffer buf not None, double gate=0.1, double grainsize_ms=50.0
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Grain reverse failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -3760,8 +3845,10 @@ def grain_timewarp(Buffer buf not None, double stretch=1.0, stretch_curve=None,
         curve_view = curve_arr
         curve_ptr = &curve_view[0]
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_grain_timewarp(
-        ctx, input_buf, stretch, curve_ptr, curve_points, gate, grainsize_ms)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_grain_timewarp(
+            ctx, input_buf, stretch, curve_ptr, curve_points, gate, grainsize_ms)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -3769,8 +3856,7 @@ def grain_timewarp(Buffer buf not None, double stretch=1.0, stretch_curve=None,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Grain timewarp failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -3814,8 +3900,10 @@ def grain_repitch(Buffer buf not None, double pitch_semitones=0.0, pitch_curve=N
         curve_view = curve_arr
         curve_ptr = &curve_view[0]
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_grain_repitch(
-        ctx, input_buf, pitch_semitones, curve_ptr, curve_points, gate, grainsize_ms)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_grain_repitch(
+            ctx, input_buf, pitch_semitones, curve_ptr, curve_points, gate, grainsize_ms)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -3823,8 +3911,7 @@ def grain_repitch(Buffer buf not None, double pitch_semitones=0.0, pitch_curve=N
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Grain repitch failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -3864,8 +3951,10 @@ def grain_position(Buffer buf not None, positions=None, double duration=0.0,
         pos_view = pos_arr
         pos_ptr = &pos_view[0]
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_grain_position(
-        ctx, input_buf, pos_ptr, pos_count, duration, gate, grainsize_ms)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_grain_position(
+            ctx, input_buf, pos_ptr, pos_count, duration, gate, grainsize_ms)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -3873,8 +3962,7 @@ def grain_position(Buffer buf not None, positions=None, double duration=0.0,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Grain position failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -3903,8 +3991,10 @@ def grain_omit(Buffer buf not None, int keep=1, int out_of=2,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_grain_omit(
-        ctx, input_buf, keep, out_of, gate, grainsize_ms, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_grain_omit(
+            ctx, input_buf, keep, out_of, gate, grainsize_ms, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -3912,8 +4002,7 @@ def grain_omit(Buffer buf not None, int keep=1, int out_of=2,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Grain omit failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -3941,8 +4030,10 @@ def grain_duplicate(Buffer buf not None, int repeats=2,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_grain_duplicate(
-        ctx, input_buf, repeats, gate, grainsize_ms, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_grain_duplicate(
+            ctx, input_buf, repeats, gate, grainsize_ms, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -3950,8 +4041,7 @@ def grain_duplicate(Buffer buf not None, int repeats=2,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Grain duplicate failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -3983,8 +4073,10 @@ def spectral_focus(Buffer buf not None, double center_freq=1000.0,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_spectral_focus(
-        ctx, input_buf, center_freq, bandwidth, gain_db, fft_size)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_spectral_focus(
+            ctx, input_buf, center_freq, bandwidth, gain_db, fft_size)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -3992,8 +4084,7 @@ def spectral_focus(Buffer buf not None, double center_freq=1000.0,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Spectral focus failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -4020,8 +4111,10 @@ def spectral_hilite(Buffer buf not None, double threshold_db=-20.0,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_spectral_hilite(
-        ctx, input_buf, threshold_db, boost_db, fft_size)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_spectral_hilite(
+            ctx, input_buf, threshold_db, boost_db, fft_size)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -4029,8 +4122,7 @@ def spectral_hilite(Buffer buf not None, double threshold_db=-20.0,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Spectral hilite failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -4055,8 +4147,10 @@ def spectral_fold(Buffer buf not None, double fold_freq=2000.0, int fft_size=102
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_spectral_fold(
-        ctx, input_buf, fold_freq, fft_size)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_spectral_fold(
+            ctx, input_buf, fold_freq, fft_size)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -4064,8 +4158,7 @@ def spectral_fold(Buffer buf not None, double fold_freq=2000.0, int fft_size=102
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Spectral fold failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -4090,8 +4183,10 @@ def spectral_clean(Buffer buf not None, double threshold_db=-40.0, int fft_size=
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_spectral_clean(
-        ctx, input_buf, threshold_db, fft_size)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_spectral_clean(
+            ctx, input_buf, threshold_db, fft_size)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -4099,8 +4194,7 @@ def spectral_clean(Buffer buf not None, double threshold_db=-40.0, int fft_size=
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Spectral clean failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -4132,8 +4226,10 @@ def strange(Buffer buf not None, double chaos_amount=0.5, double rate=2.0,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_strange(
-        ctx, input_buf, chaos_amount, rate, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_strange(
+            ctx, input_buf, chaos_amount, rate, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -4141,8 +4237,7 @@ def strange(Buffer buf not None, double chaos_amount=0.5, double rate=2.0,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Strange modulation failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -4170,8 +4265,10 @@ def brownian(Buffer buf not None, double step_size=0.1, double smoothing=0.9,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_brownian(
-        ctx, input_buf, step_size, smoothing, target, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_brownian(
+            ctx, input_buf, step_size, smoothing, target, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -4179,8 +4276,7 @@ def brownian(Buffer buf not None, double step_size=0.1, double smoothing=0.9,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Brownian modulation failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -4208,8 +4304,10 @@ def crystal(Buffer buf not None, double density=50.0, double decay=0.5,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_crystal(
-        ctx, input_buf, density, decay, pitch_scatter, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_crystal(
+            ctx, input_buf, density, decay, pitch_scatter, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -4217,8 +4315,7 @@ def crystal(Buffer buf not None, double density=50.0, double decay=0.5,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Crystal texture failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -4246,8 +4343,10 @@ def fractal(Buffer buf not None, int depth=3, double pitch_ratio=0.5,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_fractal(
-        ctx, input_buf, depth, pitch_ratio, decay, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_fractal(
+            ctx, input_buf, depth, pitch_ratio, decay, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -4255,8 +4354,7 @@ def fractal(Buffer buf not None, int depth=3, double pitch_ratio=0.5,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Fractal processing failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -4284,8 +4382,10 @@ def quirk(Buffer buf not None, double probability=0.3, double intensity=0.5,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_quirk(
-        ctx, input_buf, probability, intensity, mode, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_quirk(
+            ctx, input_buf, probability, intensity, mode, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -4293,8 +4393,7 @@ def quirk(Buffer buf not None, double probability=0.3, double intensity=0.5,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Quirk processing failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -4323,8 +4422,10 @@ def chirikov(Buffer buf not None, double k_param=2.0, double mod_depth=0.5,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_chirikov(
-        ctx, input_buf, k_param, mod_depth, rate, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_chirikov(
+            ctx, input_buf, k_param, mod_depth, rate, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -4332,8 +4433,7 @@ def chirikov(Buffer buf not None, double k_param=2.0, double mod_depth=0.5,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Chirikov modulation failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -4361,8 +4461,10 @@ def cantor(Buffer buf not None, int depth=4, double duty_cycle=0.5,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_cantor(
-        ctx, input_buf, depth, duty_cycle, smooth_ms, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_cantor(
+            ctx, input_buf, depth, duty_cycle, smooth_ms, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -4370,8 +4472,7 @@ def cantor(Buffer buf not None, int depth=4, double duty_cycle=0.5,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Cantor gating failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -4402,8 +4503,10 @@ def cascade(Buffer buf not None, int num_echoes=6, double delay_ms=100.0,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_cascade(
-        ctx, input_buf, num_echoes, delay_ms, pitch_decay, amp_decay, filter_decay, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_cascade(
+            ctx, input_buf, num_echoes, delay_ms, pitch_decay, amp_decay, filter_decay, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -4411,8 +4514,7 @@ def cascade(Buffer buf not None, int num_echoes=6, double delay_ms=100.0,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Cascade processing failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -4440,8 +4542,10 @@ def fracture(Buffer buf not None, double fragment_ms=50.0, double gap_ratio=0.5,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_fracture(
-        ctx, input_buf, fragment_ms, gap_ratio, scatter, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_fracture(
+            ctx, input_buf, fragment_ms, gap_ratio, scatter, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -4449,8 +4553,7 @@ def fracture(Buffer buf not None, double fragment_ms=50.0, double gap_ratio=0.5,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Fracture processing failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -4479,8 +4582,10 @@ def tesselate(Buffer buf not None, double tile_ms=50.0, int pattern=1,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_tesselate(
-        ctx, input_buf, tile_ms, pattern, overlap, transform, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_tesselate(
+            ctx, input_buf, tile_ms, pattern, overlap, transform, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -4488,8 +4593,7 @@ def tesselate(Buffer buf not None, double tile_ms=50.0, int pattern=1,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Tesselate processing failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -4520,11 +4624,14 @@ def morph(Buffer buf1 not None, Buffer buf2 not None,
         raise ValueError("Sample rates must match for morphing")
 
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
-    cdef cdp_lib_buffer* input1_buf = _buffer_to_cdp_lib(buf1)
-    cdef cdp_lib_buffer* input2_buf = _buffer_to_cdp_lib(buf2)
+    cdef cdp_lib_buffer* input1_buf
+    cdef cdp_lib_buffer* input2_buf
+    _buffer_pair_to_cdp_lib(buf1, buf2, &input1_buf, &input2_buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_morph(
-        ctx, input1_buf, input2_buf, morph_start, morph_end, exponent, fft_size)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_morph(
+            ctx, input1_buf, input2_buf, morph_start, morph_end, exponent, fft_size)
 
     cdp_lib_buffer_free(input1_buf)
     cdp_lib_buffer_free(input2_buf)
@@ -4533,8 +4640,7 @@ def morph(Buffer buf1 not None, Buffer buf2 not None,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Morph failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -4561,11 +4667,14 @@ def morph_glide(Buffer buf1 not None, Buffer buf2 not None,
         raise ValueError("Sample rates must match for glide")
 
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
-    cdef cdp_lib_buffer* input1_buf = _buffer_to_cdp_lib(buf1)
-    cdef cdp_lib_buffer* input2_buf = _buffer_to_cdp_lib(buf2)
+    cdef cdp_lib_buffer* input1_buf
+    cdef cdp_lib_buffer* input2_buf
+    _buffer_pair_to_cdp_lib(buf1, buf2, &input1_buf, &input2_buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_morph_glide(
-        ctx, input1_buf, input2_buf, duration, fft_size)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_morph_glide(
+            ctx, input1_buf, input2_buf, duration, fft_size)
 
     cdp_lib_buffer_free(input1_buf)
     cdp_lib_buffer_free(input2_buf)
@@ -4574,8 +4683,7 @@ def morph_glide(Buffer buf1 not None, Buffer buf2 not None,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Morph glide failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -4602,11 +4710,14 @@ def cross_synth(Buffer buf1 not None, Buffer buf2 not None,
         raise ValueError("Sample rates must match for cross-synthesis")
 
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
-    cdef cdp_lib_buffer* input1_buf = _buffer_to_cdp_lib(buf1)
-    cdef cdp_lib_buffer* input2_buf = _buffer_to_cdp_lib(buf2)
+    cdef cdp_lib_buffer* input1_buf
+    cdef cdp_lib_buffer* input2_buf
+    _buffer_pair_to_cdp_lib(buf1, buf2, &input1_buf, &input2_buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_cross_synth(
-        ctx, input1_buf, input2_buf, mode, mix, fft_size)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_cross_synth(
+            ctx, input1_buf, input2_buf, mode, mix, fft_size)
 
     cdp_lib_buffer_free(input1_buf)
     cdp_lib_buffer_free(input2_buf)
@@ -4615,8 +4726,7 @@ def cross_synth(Buffer buf1 not None, Buffer buf2 not None,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Cross-synthesis failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -4649,8 +4759,9 @@ def morph_glide_native(Buffer buf1 not None, Buffer buf2 not None,
         raise ValueError("Sample rates must match for glide")
 
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
-    cdef cdp_lib_buffer* input1_buf = _buffer_to_cdp_lib(buf1)
-    cdef cdp_lib_buffer* input2_buf = _buffer_to_cdp_lib(buf2)
+    cdef cdp_lib_buffer* input1_buf
+    cdef cdp_lib_buffer* input2_buf
+    _buffer_pair_to_cdp_lib(buf1, buf2, &input1_buf, &input2_buf)
 
     cdef cdp_lib_buffer* output_buf = cdp_morph_glide_native(
         ctx, input1_buf, input2_buf, duration, fft_size)
@@ -4662,8 +4773,7 @@ def morph_glide_native(Buffer buf1 not None, Buffer buf2 not None,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Native morph glide failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -4702,8 +4812,9 @@ def morph_bridge_native(Buffer buf1 not None, Buffer buf2 not None,
         raise ValueError("Sample rates must match for bridge")
 
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
-    cdef cdp_lib_buffer* input1_buf = _buffer_to_cdp_lib(buf1)
-    cdef cdp_lib_buffer* input2_buf = _buffer_to_cdp_lib(buf2)
+    cdef cdp_lib_buffer* input1_buf
+    cdef cdp_lib_buffer* input2_buf
+    _buffer_pair_to_cdp_lib(buf1, buf2, &input1_buf, &input2_buf)
 
     cdef cdp_lib_buffer* output_buf = cdp_morph_bridge_native(
         ctx, input1_buf, input2_buf, mode, offset, interp_start, interp_end, fft_size)
@@ -4715,8 +4826,7 @@ def morph_bridge_native(Buffer buf1 not None, Buffer buf2 not None,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Native morph bridge failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -4757,8 +4867,9 @@ def morph_native(Buffer buf1 not None, Buffer buf2 not None,
         raise ValueError("Sample rates must match for morph")
 
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
-    cdef cdp_lib_buffer* input1_buf = _buffer_to_cdp_lib(buf1)
-    cdef cdp_lib_buffer* input2_buf = _buffer_to_cdp_lib(buf2)
+    cdef cdp_lib_buffer* input1_buf
+    cdef cdp_lib_buffer* input2_buf
+    _buffer_pair_to_cdp_lib(buf1, buf2, &input1_buf, &input2_buf)
 
     cdef cdp_lib_buffer* output_buf = cdp_morph_morph_native(
         ctx, input1_buf, input2_buf, mode,
@@ -4772,8 +4883,7 @@ def morph_native(Buffer buf1 not None, Buffer buf2 not None,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Native morph failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -4810,8 +4920,10 @@ def pitch(Buffer buf not None, double min_freq=50.0, double max_freq=2000.0,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_pitch_data* result = cdp_lib_pitch(
-        ctx, input_buf, min_freq, max_freq, frame_size, hop_size)
+    cdef cdp_pitch_data* result
+    with nogil:
+        result = cdp_lib_pitch(
+            ctx, input_buf, min_freq, max_freq, frame_size, hop_size)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -4862,8 +4974,10 @@ def formants(Buffer buf not None, int lpc_order=12, int frame_size=1024, int hop
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_formant_data* result = cdp_lib_formants(
-        ctx, input_buf, lpc_order, frame_size, hop_size)
+    cdef cdp_formant_data* result
+    with nogil:
+        result = cdp_lib_formants(
+            ctx, input_buf, lpc_order, frame_size, hop_size)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -4929,8 +5043,10 @@ def get_partials(Buffer buf not None, double min_amp_db=-60.0, int max_partials=
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_partial_data* result = cdp_lib_get_partials(
-        ctx, input_buf, min_amp_db, max_partials, freq_tolerance, fft_size, hop_size)
+    cdef cdp_partial_data* result
+    with nogil:
+        result = cdp_lib_get_partials(
+            ctx, input_buf, min_amp_db, max_partials, freq_tolerance, fft_size, hop_size)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -5009,8 +5125,11 @@ def zigzag(Buffer buf not None, times not None, double splice_ms=15.0):
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_zigzag(
-        ctx, input_buf, &times_view[0], len(times_list), splice_ms)
+    cdef int n_times = len(times_list)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_zigzag(
+            ctx, input_buf, &times_view[0], n_times, splice_ms)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -5018,8 +5137,7 @@ def zigzag(Buffer buf not None, times not None, double splice_ms=15.0):
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Zigzag processing failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -5053,8 +5171,10 @@ def iterate(Buffer buf not None, int repeats=4, double delay=0.5,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_iterate(
-        ctx, input_buf, repeats, delay, delay_rand, pitch_shift, gain_decay, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_iterate(
+            ctx, input_buf, repeats, delay, delay_rand, pitch_shift, gain_decay, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -5062,8 +5182,7 @@ def iterate(Buffer buf not None, int repeats=4, double delay=0.5,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Iterate processing failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -5101,9 +5220,11 @@ def stutter(Buffer buf not None, double segment_ms=100.0, double duration=5.0,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_stutter(
-        ctx, input_buf, segment_ms, duration, silence_prob,
-        silence_min_ms, silence_max_ms, transpose_range, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_stutter(
+            ctx, input_buf, segment_ms, duration, silence_prob,
+            silence_min_ms, silence_max_ms, transpose_range, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -5111,8 +5232,7 @@ def stutter(Buffer buf not None, double segment_ms=100.0, double duration=5.0,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Stutter processing failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -5150,8 +5270,10 @@ def bounce(Buffer buf not None, int bounces=8, double initial_delay=0.5,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_bounce(
-        ctx, input_buf, bounces, initial_delay, shrink, end_level, level_curve, cut_bounces)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_bounce(
+            ctx, input_buf, bounces, initial_delay, shrink, end_level, level_curve, cut_bounces)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -5159,8 +5281,7 @@ def bounce(Buffer buf not None, int bounces=8, double initial_delay=0.5,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Bounce processing failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -5210,9 +5331,11 @@ def drunk(Buffer buf not None, double duration=5.0, double step_ms=100.0,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_drunk(
-        ctx, input_buf, duration, step_ms, step_rand, actual_locus, actual_ambitus,
-        overlap, splice_ms, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_drunk(
+            ctx, input_buf, duration, step_ms, step_rand, actual_locus, actual_ambitus,
+            overlap, splice_ms, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -5220,8 +5343,7 @@ def drunk(Buffer buf not None, double duration=5.0, double step_ms=100.0,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Drunk processing failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -5258,8 +5380,10 @@ def loop(Buffer buf not None, double start=0.0, double length_ms=500.0,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_loop(
-        ctx, input_buf, start, length_ms, step_ms, search_ms, repeats, splice_ms, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_loop(
+            ctx, input_buf, start, length_ms, step_ms, search_ms, repeats, splice_ms, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -5267,8 +5391,7 @@ def loop(Buffer buf not None, double start=0.0, double length_ms=500.0,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Loop processing failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -5318,8 +5441,10 @@ def retime(buf not None, double ratio=1.0, double grain_ms=50.0, double overlap=
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_retime(
-        ctx, input_buf, ratio, grain_ms, overlap)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_retime(
+            ctx, input_buf, ratio, grain_ms, overlap)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -5327,8 +5452,7 @@ def retime(buf not None, double ratio=1.0, double grain_ms=50.0, double overlap=
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Retime processing failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -5384,8 +5508,10 @@ def scramble(buf not None, int mode=0, int group_size=2, unsigned int seed=0):
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_scramble(
-        ctx, input_buf, mode, group_size, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_scramble(
+            ctx, input_buf, mode, group_size, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -5393,8 +5519,7 @@ def scramble(buf not None, int mode=0, int group_size=2, unsigned int seed=0):
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Scramble processing failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -5452,8 +5577,10 @@ def splinter(buf not None, double start=0.0, double duration_ms=50.0, int repeat
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_splinter(
-        ctx, input_buf, start, duration_ms, repeats, min_shrink, shrink_curve, accel, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_splinter(
+            ctx, input_buf, start, duration_ms, repeats, min_shrink, shrink_curve, accel, seed)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -5461,8 +5588,7 @@ def splinter(buf not None, double start=0.0, double duration_ms=50.0, int repeat
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Splinter processing failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -5496,7 +5622,9 @@ def spin(buf, double rate=1.0, double doppler=0.0, double depth=1.0):
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_spin(ctx, input_buf, rate, doppler, depth)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_spin(ctx, input_buf, rate, doppler, depth)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -5504,8 +5632,7 @@ def spin(buf, double rate=1.0, double doppler=0.0, double depth=1.0):
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Spin processing failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -5549,8 +5676,10 @@ def rotor(buf, double pitch_rate=1.0, double pitch_depth=2.0,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_rotor(
-        ctx, input_buf, pitch_rate, pitch_depth, amp_rate, amp_depth, phase_offset)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_rotor(
+            ctx, input_buf, pitch_rate, pitch_depth, amp_rate, amp_depth, phase_offset)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -5558,8 +5687,7 @@ def rotor(buf, double pitch_rate=1.0, double pitch_depth=2.0,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Rotor processing failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -5598,15 +5726,16 @@ def synth_wave(int waveform=WAVE_SINE, double frequency=440.0, double amplitude=
 
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_synth_wave(
-        ctx, waveform, frequency, amplitude, duration, sample_rate, channels)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_synth_wave(
+            ctx, waveform, frequency, amplitude, duration, sample_rate, channels)
 
     if output_buf is NULL:
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Synth wave failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -5640,15 +5769,16 @@ def synth_noise(int pink=0, double amplitude=0.8, double duration=1.0,
 
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_synth_noise(
-        ctx, pink, amplitude, duration, sample_rate, channels, seed)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_synth_noise(
+            ctx, pink, amplitude, duration, sample_rate, channels, seed)
 
     if output_buf is NULL:
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Synth noise failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -5686,15 +5816,16 @@ def synth_click(double tempo=120.0, int beats_per_bar=4, double duration=10.0,
 
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_synth_click(
-        ctx, tempo, beats_per_bar, duration, click_freq, click_dur_ms, sample_rate)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_synth_click(
+            ctx, tempo, beats_per_bar, duration, click_freq, click_dur_ms, sample_rate)
 
     if output_buf is NULL:
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Synth click failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -5758,15 +5889,16 @@ def synth_chord(midi_notes, double amplitude=0.8, double duration=1.0,
 
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_synth_chord(
-        ctx, notes_array, num_notes, amplitude, duration, detune_cents, sample_rate, channels)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_synth_chord(
+            ctx, notes_array, num_notes, amplitude, duration, detune_cents, sample_rate, channels)
 
     if output_buf is NULL:
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Synth chord failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -5798,9 +5930,11 @@ def psow_stretch(Buffer buf not None, double stretch_factor=1.0, int grain_count
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_psow_stretch(
-        ctx, input_buf, stretch_factor, grain_count
-    )
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_psow_stretch(
+            ctx, input_buf, stretch_factor, grain_count
+        )
 
     cdp_lib_buffer_free(input_buf)
 
@@ -5808,8 +5942,7 @@ def psow_stretch(Buffer buf not None, double stretch_factor=1.0, int grain_count
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "PSOW stretch failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -5840,9 +5973,11 @@ def psow_grab(Buffer buf not None, double time=0.0, double duration=0.0,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_psow_grab(
-        ctx, input_buf, time, duration, grain_count, density
-    )
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_psow_grab(
+            ctx, input_buf, time, duration, grain_count, density
+        )
 
     cdp_lib_buffer_free(input_buf)
 
@@ -5850,8 +5985,7 @@ def psow_grab(Buffer buf not None, double time=0.0, double duration=0.0,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "PSOW grab failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -5876,9 +6010,11 @@ def psow_dupl(Buffer buf not None, int repeat_count=2, int grain_count=1):
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_psow_dupl(
-        ctx, input_buf, repeat_count, grain_count
-    )
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_psow_dupl(
+            ctx, input_buf, repeat_count, grain_count
+        )
 
     cdp_lib_buffer_free(input_buf)
 
@@ -5886,8 +6022,7 @@ def psow_dupl(Buffer buf not None, int repeat_count=2, int grain_count=1):
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "PSOW dupl failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -5914,12 +6049,15 @@ def psow_interp(Buffer grain1 not None, Buffer grain2 not None,
         CDPError: If processing fails.
     """
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
-    cdef cdp_lib_buffer* grain1_buf = _buffer_to_cdp_lib(grain1)
-    cdef cdp_lib_buffer* grain2_buf = _buffer_to_cdp_lib(grain2)
+    cdef cdp_lib_buffer* grain1_buf
+    cdef cdp_lib_buffer* grain2_buf
+    _buffer_pair_to_cdp_lib(grain1, grain2, &grain1_buf, &grain2_buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_psow_interp(
-        ctx, grain1_buf, grain2_buf, start_dur, interp_dur, end_dur
-    )
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_psow_interp(
+            ctx, grain1_buf, grain2_buf, start_dur, interp_dur, end_dur
+        )
 
     cdp_lib_buffer_free(grain1_buf)
     cdp_lib_buffer_free(grain2_buf)
@@ -5928,8 +6066,7 @@ def psow_interp(Buffer grain1 not None, Buffer grain2 not None,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "PSOW interp failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -5960,9 +6097,11 @@ def fofex_extract(Buffer buf not None, double time, int fof_count=1, bint window
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_fofex_extract(
-        ctx, input_buf, time, fof_count, 1 if window else 0
-    )
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_fofex_extract(
+            ctx, input_buf, time, fof_count, 1 if window else 0
+        )
 
     cdp_lib_buffer_free(input_buf)
 
@@ -5970,8 +6109,7 @@ def fofex_extract(Buffer buf not None, double time, int fof_count=1, bint window
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "FOFEX extract failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -6006,9 +6144,11 @@ def fofex_extract_all(Buffer buf not None, int fof_count=1, double min_level_db=
     fof_info[0] = 0
     fof_info[1] = 0
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_fofex_extract_all(
-        ctx, input_buf, fof_count, min_level_db, 1 if window else 0, fof_info
-    )
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_fofex_extract_all(
+            ctx, input_buf, fof_count, min_level_db, 1 if window else 0, fof_info
+        )
 
     cdp_lib_buffer_free(input_buf)
 
@@ -6016,8 +6156,7 @@ def fofex_extract_all(Buffer buf not None, int fof_count=1, double min_level_db=
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "FOFEX extract_all failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return (result, fof_info[0], fof_info[1])
 
@@ -6048,9 +6187,11 @@ def fofex_synth(Buffer fof_bank not None, double duration, double frequency,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* fof_buf = _buffer_to_cdp_lib(fof_bank)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_fofex_synth(
-        ctx, fof_buf, duration, frequency, amplitude, fof_index, fof_unit_len
-    )
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_fofex_synth(
+            ctx, fof_buf, duration, frequency, amplitude, fof_index, fof_unit_len
+        )
 
     cdp_lib_buffer_free(fof_buf)
 
@@ -6058,8 +6199,7 @@ def fofex_synth(Buffer fof_bank not None, double duration, double frequency,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "FOFEX synth failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -6086,9 +6226,11 @@ def fofex_repitch(Buffer buf not None, double pitch_shift, bint preserve_formant
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_fofex_repitch(
-        ctx, input_buf, pitch_shift, 1 if preserve_formants else 0
-    )
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_fofex_repitch(
+            ctx, input_buf, pitch_shift, 1 if preserve_formants else 0
+        )
 
     cdp_lib_buffer_free(input_buf)
 
@@ -6096,8 +6238,7 @@ def fofex_repitch(Buffer buf not None, double pitch_shift, bint preserve_formant
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "FOFEX repitch failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -6133,9 +6274,11 @@ def flutter(Buffer buf not None, double frequency=4.0, double depth=1.0,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_flutter(
-        ctx, input_buf, frequency, depth, gain, 1 if randomize else 0
-    )
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_flutter(
+            ctx, input_buf, frequency, depth, gain, 1 if randomize else 0
+        )
 
     cdp_lib_buffer_free(input_buf)
 
@@ -6143,8 +6286,7 @@ def flutter(Buffer buf not None, double frequency=4.0, double depth=1.0,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Flutter failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -6194,9 +6336,11 @@ def hover(Buffer buf not None, double frequency=440.0, double location=0.5,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_hover(
-        ctx, input_buf, frequency, location, frq_rand, loc_rand, splice_ms, duration
-    )
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_hover(
+            ctx, input_buf, frequency, location, frq_rand, loc_rand, splice_ms, duration
+        )
 
     cdp_lib_buffer_free(input_buf)
 
@@ -6204,8 +6348,7 @@ def hover(Buffer buf not None, double frequency=440.0, double location=0.5,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Hover failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -6243,7 +6386,9 @@ def constrict(Buffer buf not None, double constriction=50.0):
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_constrict(ctx, input_buf, constriction)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_constrict(ctx, input_buf, constriction)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -6251,8 +6396,7 @@ def constrict(Buffer buf not None, double constriction=50.0):
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Constrict failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -6304,7 +6448,8 @@ def phase_invert(samples not None, int sample_rate=44100):
     ctx = _get_cdp_lib_ctx()
     input_buf = _buffer_to_cdp_lib(<Buffer>samples)
 
-    output_buf = cdp_lib_phase_invert(ctx, input_buf)
+    with nogil:
+        output_buf = cdp_lib_phase_invert(ctx, input_buf)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -6312,8 +6457,7 @@ def phase_invert(samples not None, int sample_rate=44100):
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Phase invert failed")
 
-    result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -6350,7 +6494,9 @@ def phase_stereo(Buffer buf not None, double transfer=1.0):
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_phase_stereo(ctx, input_buf, transfer)
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_phase_stereo(ctx, input_buf, transfer)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -6358,8 +6504,7 @@ def phase_stereo(Buffer buf not None, double transfer=1.0):
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Phase stereo failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result
 
@@ -6370,7 +6515,8 @@ def phase_stereo(Buffer buf not None, double transfer=1.0):
 
 def wrappage(Buffer buf not None, double grain_size=50.0, double density=1.0,
              double velocity=1.0, double pitch=0.0, double spread=1.0,
-             double jitter=0.1, double splice_ms=5.0, double duration=0.0):
+             double jitter=0.1, double splice_ms=5.0, double duration=0.0,
+             unsigned int seed=0):
     """
     Apply wrappage effect - granular texture with stereo spatial distribution.
 
@@ -6407,6 +6553,8 @@ def wrappage(Buffer buf not None, double grain_size=50.0, double density=1.0,
                    Longer splices = smoother but less defined grains.
         duration: Output duration in seconds. Default 0.0 (automatic).
                   Must be specified if velocity is 0.
+        seed: Random seed (default 0 = derive from the clock, >0 for
+              reproducible results), matching the other granular operations.
 
     Returns:
         New stereo Buffer with wrappage effect applied.
@@ -6417,10 +6565,12 @@ def wrappage(Buffer buf not None, double grain_size=50.0, double density=1.0,
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_wrappage(
-        ctx, input_buf, grain_size, density, velocity, pitch,
-        spread, jitter, splice_ms, duration
-    )
+    cdef cdp_lib_buffer* output_buf
+    with nogil:
+        output_buf = cdp_lib_wrappage(
+            ctx, input_buf, grain_size, density, velocity, pitch,
+            spread, jitter, splice_ms, duration, seed
+        )
 
     cdp_lib_buffer_free(input_buf)
 
@@ -6428,7 +6578,6 @@ def wrappage(Buffer buf not None, double grain_size=50.0, double density=1.0,
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Wrappage failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
-    cdp_lib_buffer_free(output_buf)
+    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
 
     return result

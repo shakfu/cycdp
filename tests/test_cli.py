@@ -20,7 +20,6 @@ from cycdp.cli import (
     resolve_output_path,
 )
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================
@@ -767,3 +766,60 @@ class TestNormalizationPolicy:
         for name in NO_AUTO_NORMALIZE:
             assert name in COMMANDS, f"{name} is not a registered command"
             assert COMMANDS[name]["input"] in ("single", "dual", "synth")
+
+
+# =============================================================================
+# Error handling
+# =============================================================================
+
+
+class TestErrorHandling:
+    """Ordinary user errors must produce a message and exit 1, not a traceback.
+
+    main() previously dispatched with no exception handling, so a wrong file
+    type or a malformed argument reached the user as a raw Python traceback --
+    even though the same file already handled "file not found" gracefully.
+    """
+
+    def test_unreadable_file_reports_cleanly(self, tmp_path, capsys):
+        not_a_wav = tmp_path / "notes.txt"
+        not_a_wav.write_text("this is not audio")
+
+        with pytest.raises(SystemExit) as exc:
+            main(["info", str(not_a_wav)])
+
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert err.startswith("Error:")
+        assert "Traceback" not in err
+
+    def test_malformed_json_argument_reports_cleanly(self, wav_file, capsys):
+        with pytest.raises(SystemExit) as exc:
+            main(["distort-mark", wav_file, "--markers", "[1,2"])
+
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "invalid JSON" in err
+        assert "Traceback" not in err
+
+    def test_missing_file_reports_cleanly(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            main(["reverb", "definitely_not_here.wav"])
+
+        assert exc.value.code == 1
+        assert "file not found" in capsys.readouterr().err
+
+    def test_traceback_escape_hatch(self, tmp_path, monkeypatch):
+        """CYCDP_TRACEBACK=1 re-raises so the failure can still be debugged."""
+        monkeypatch.setenv("CYCDP_TRACEBACK", "1")
+        not_a_wav = tmp_path / "notes.txt"
+        not_a_wav.write_text("this is not audio")
+
+        with pytest.raises(cycdp.CDPError):
+            main(["info", str(not_a_wav)])
+
+    def test_successful_command_still_exits_normally(self, wav_file, tmp_path):
+        """The handler must not swallow or alter the success path."""
+        out = str(tmp_path / "out.wav")
+        main(["reverb", wav_file, "--decay-time", "0.5", "-o", out])
+        assert os.path.exists(out)

@@ -99,6 +99,31 @@ jobs:
       - name: Build with sanitizers and run tests
         run: make sanitize
 
+  tsan:
+    name: ThreadSanitizer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      # Processing calls release the GIL, so they can now genuinely overlap.
+      # TSan is the only practical way to validate that: it caught the
+      # ctx->prng_state race while the library context was still a shared
+      # singleton. ASan cannot detect data races and TSan cannot be combined
+      # with it, hence a separate job.
+      - name: Build with ThreadSanitizer and run tests
+        run: make tsan
+
   build:
     name: Build (${{ matrix.os }}/${{ matrix.python-version }})
     needs: qa
@@ -107,7 +132,13 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.9", "3.12"]
+        # Must bracket requires-python (">=3.10"). 3.9 was listed here, below
+        # the supported floor: uv honours requires-python and silently resolved
+        # a newer interpreter, so the job passed while its name claimed
+        # coverage it did not have -- and 3.10, the actual floor, was never
+        # built. Keep this as [floor, ceiling] and move both when
+        # requires-python moves.
+        python-version: ["3.10", "3.14"]
 
     steps:
       - uses: actions/checkout@v4

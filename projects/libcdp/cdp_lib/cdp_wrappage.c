@@ -26,18 +26,6 @@
 #define MIN_SPLICE 0.5
 #define MAX_SPLICE 50.0
 
-/* Simple pseudo-random number generator */
-static unsigned int wrappage_seed = 12345;
-
-static double wrappage_rand(void) {
-    wrappage_seed = wrappage_seed * 1103515245 + 12345;
-    return (double)(wrappage_seed & 0x7fffffff) / (double)0x7fffffff;
-}
-
-static void wrappage_srand(unsigned int seed) {
-    wrappage_seed = seed;
-}
-
 /*
  * Interpolate a sample value at a fractional position.
  */
@@ -67,7 +55,8 @@ cdp_lib_buffer* cdp_lib_wrappage(cdp_lib_ctx* ctx,
                                   double spread,
                                   double jitter,
                                   double splice_ms,
-                                  double duration) {
+                                  double duration,
+                                  unsigned int seed) {
     if (ctx == NULL || input == NULL) {
         if (ctx) cdp_lib_set_error(ctx, "NULL input");
         return NULL;
@@ -164,8 +153,10 @@ cdp_lib_buffer* cdp_lib_wrappage(cdp_lib_ctx* ctx,
         return NULL;
     }
 
-    /* Initialize random seed */
-    wrappage_srand(42);
+    /* Seed the context PRNG. This was previously a file-static generator
+       hardcoded to 42, which made wrappage the only granular operation whose
+       randomisation could not be controlled, and shared state across calls. */
+    cdp_lib_seed(ctx, seed);
 
     /* Process grains */
     double in_pos = 0.0;  /* Current position in input (fractional samples) */
@@ -180,7 +171,7 @@ cdp_lib_buffer* cdp_lib_wrappage(cdp_lib_ctx* ctx,
         double jittered_in_pos = in_pos;
         if (jitter > 0.0) {
             double jitter_range = grain_samps * jitter;
-            double jitter_offset = (wrappage_rand() - 0.5) * 2.0 * jitter_range;
+            double jitter_offset = (cdp_lib_random(ctx) - 0.5) * 2.0 * jitter_range;
             jittered_in_pos += jitter_offset;
             if (jittered_in_pos < 0) jittered_in_pos = 0;
         }
@@ -219,7 +210,7 @@ cdp_lib_buffer* cdp_lib_wrappage(cdp_lib_ctx* ctx,
         double pan = 0.5;  /* Center by default */
         if (spread > 0.0) {
             /* Random position within spread range, centered */
-            pan = 0.5 + (wrappage_rand() - 0.5) * spread;
+            pan = 0.5 + (cdp_lib_random(ctx) - 0.5) * spread;
         }
 
         /* Calculate stereo gains (constant power panning) */
@@ -232,7 +223,7 @@ cdp_lib_buffer* cdp_lib_wrappage(cdp_lib_ctx* ctx,
         if (jitter > 0.0 && out_step > 1) {
             int jitter_range = (int)(out_step * jitter * 0.5);
             if (jitter_range > 0) {
-                int jitter_offset = (int)((wrappage_rand() - 0.5) * 2.0 * jitter_range);
+                int jitter_offset = (int)((cdp_lib_random(ctx) - 0.5) * 2.0 * jitter_range);
                 if ((int)jittered_out_pos + jitter_offset >= 0) {
                     jittered_out_pos = (size_t)((int)jittered_out_pos + jitter_offset);
                 }

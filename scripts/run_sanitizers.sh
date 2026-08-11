@@ -19,17 +19,27 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 
-BUILD_DIR="${CYCDP_SAN_BUILD_DIR:-build/sanitize}"
+# MODE=address (default) runs ASan+UBSan; MODE=thread runs ThreadSanitizer,
+# which is what validates the GIL-releasing processing calls. The two cannot be
+# combined, hence separate builds.
+MODE="${CYCDP_SANITIZER:-address}"
+BUILD_DIR="${CYCDP_SAN_BUILD_DIR:-build/sanitize-$MODE}"
 PYTHON="${CYCDP_PYTHON:-$REPO/.venv/bin/python}"
+
+case "$MODE" in
+    address) CMAKE_FLAG="-DCYCDP_SANITIZE=ON" ;;
+    thread)  CMAKE_FLAG="-DCYCDP_TSAN=ON" ;;
+    *) echo "error: CYCDP_SANITIZER must be 'address' or 'thread'" >&2; exit 1 ;;
+esac
 
 if [ ! -x "$PYTHON" ]; then
     echo "error: no interpreter at $PYTHON (run 'make sync', or set CYCDP_PYTHON)" >&2
     exit 1
 fi
 
-echo "==> Configuring sanitizer build in $BUILD_DIR"
+echo "==> Configuring $MODE-sanitizer build in $BUILD_DIR"
 cmake -S . -B "$BUILD_DIR" \
-    -DCYCDP_SANITIZE=ON \
+    "$CMAKE_FLAG" \
     -DPython_EXECUTABLE="$PYTHON" \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     >/dev/null
@@ -77,21 +87,37 @@ cp "$SO" "$TARGET"
 # Memory *errors* -- overflows, use-after-free, NULL derefs -- are still caught.
 export ASAN_OPTIONS="detect_leaks=0:detect_container_overflow=0:abort_on_error=0"
 export UBSAN_OPTIONS="print_stacktrace=1"
+export TSAN_OPTIONS="halt_on_error=0:second_deadlock_stack=1"
 
 case "$(uname -s)" in
     Darwin)
-        RUNTIME="$(clang -print-file-name=libclang_rt.asan_osx_dynamic.dylib)"
+        if [ "$MODE" = "thread" ]; then
+            RUNTIME="$(clang -print-file-name=libclang_rt.tsan_osx_dynamic.dylib)"
+        else
+            RUNTIME="$(clang -print-file-name=libclang_rt.asan_osx_dynamic.dylib)"
+        fi
         export DYLD_INSERT_LIBRARIES="$RUNTIME"
         # macOS strips DYLD_* when spawning a child process, so tests that
         # re-exec Python would load the instrumented module without the
-        # runtime and die. Those subprocess tests are covered by the ordinary
-        # (non-sanitizer) CI run.
-        EXTRA_ARGS=(--deselect tests/test_cli.py::TestEntryPoint)
+        # runtime and die with "Interceptors are not working". Those
+        # subprocess tests are covered by the ordinary (non-sanitizer) CI run,
+        # and by the Linux sanitizer job, where LD_PRELOAD is inherited.
+        EXTRA_ARGS=(
+            --deselect tests/test_cli.py::TestEntryPoint
+            --deselect tests/test_rng.py::TestNoProcessGlobalState
+        )
         ;;
     Linux)
-        RUNTIME="$(gcc -print-file-name=libasan.so 2>/dev/null || true)"
-        if [ -z "$RUNTIME" ] || [ "$RUNTIME" = "libasan.so" ]; then
-            RUNTIME="$(clang -print-file-name=libclang_rt.asan-x86_64.so)"
+        if [ "$MODE" = "thread" ]; then
+            RUNTIME="$(gcc -print-file-name=libtsan.so 2>/dev/null || true)"
+            if [ -z "$RUNTIME" ] || [ "$RUNTIME" = "libtsan.so" ]; then
+                RUNTIME="$(clang -print-file-name=libclang_rt.tsan-x86_64.so)"
+            fi
+        else
+            RUNTIME="$(gcc -print-file-name=libasan.so 2>/dev/null || true)"
+            if [ -z "$RUNTIME" ] || [ "$RUNTIME" = "libasan.so" ]; then
+                RUNTIME="$(clang -print-file-name=libclang_rt.asan-x86_64.so)"
+            fi
         fi
         export LD_PRELOAD="$RUNTIME"
         # LD_PRELOAD is inherited by children, so subprocess tests work here.
