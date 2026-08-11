@@ -34,40 +34,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Type stubs (`_core.pyi`) disagreed with the implementation in 60 of 129 functions -- wrong parameter names, arity and defaults. Since the package ships `py.typed`, type checkers rejected correct calls and accepted incorrect ones. Stubs are now generated from `_core.pyx`.
 
-- Stub return types for `pitch`, `formants`, `get_partials` and
-  `fofex_extract_all` were wrong. The first three return dicts and the fourth a
-  `(Buffer, int, int)` tuple; all four were declared otherwise. These were
-  inherited from the hand-written stub when stub generation was introduced, so
-  the generator faithfully reproduced them. Return types are now checked
-  against what the compiled functions actually return.
+- Stub return types for `pitch`, `formants`, `get_partials` and `fofex_extract_all` were wrong. The first three return dicts and the fourth a `(Buffer, int, int)` tuple; all four were declared otherwise. These were inherited from the hand-written stub when stub generation was introduced, so the generator faithfully reproduced them. Return types are now checked against what the compiled functions actually return.
 
-- `Buffer` did not declare the buffer protocol or iteration in the stubs, so
-  type checkers rejected `peak(buf)`, `memoryview(buf)` and `for x in buf`,
-  all of which work at runtime.
+- `Buffer` did not declare the buffer protocol or iteration in the stubs, so type checkers rejected `peak(buf)`, `memoryview(buf)` and `for x in buf`, all of which work at runtime.
 
 - `phase_invert()` no longer rejects raw float32 buffers. It was defined twice in `_core.pyx` and the second definition silently shadowed the first, so the documented `phase_invert(samples, sample_rate=...)` form raised `TypeError`. Both call styles now work through a single definition.
 
 - `wrappage()` accepts a `seed`. It previously hardcoded seed 42 in a file-static generator, making it the only granular operation whose randomisation could not be controlled while every sibling took a seed. Defaults to 0 (derive from the clock), matching `brassage`, `freeze` and `grain_cloud`.
 
-- The README's headline Python example called `time_stretch(buf,
-  stretch_factor=2.0)`; the parameter is `factor`. The first example a reader
-  copies raised `TypeError`.
+- The README's headline Python example called `time_stretch(buf, stretch_factor=2.0)`; the parameter is `factor`. The first example a reader copies raised `TypeError`.
 
 - The thread-safety claim in `projects/libcdp/README.md` said "thread-safe design (no global state)" and was false when written: the bindings held a process-wide context, `cdp_distort.c` used global `srand`/`rand`, and three modules kept file-static generators. It is now accurate, and states precisely what is guaranteed (one context per thread, no shared mutable state on any processing path), what is not (a context shared between threads; `errstr`, which the vendored FFT writes on allocation-failure paths only), and what is out of scope (`cdp_shim.c`, whose process-wide I/O state is unreachable from the library).
 
-- CLI errors no longer print a raw traceback. An unreadable file or a
-  malformed `--markers` value now produces `Error: ...` and exit 1, matching
-  how the same file already handled a missing input. `CYCDP_TRACEBACK=1`
-  restores the traceback for debugging.
+- CLI errors no longer print a raw traceback. An unreadable file or a malformed `--markers` value now produces `Error: ...` and exit 1, matching how the same file already handled a missing input. `CYCDP_TRACEBACK=1` restores the traceback for debugging.
 
-- The CI build matrix tested Python 3.9, below the `requires-python = ">=3.10"`
-  floor. uv resolves a supported interpreter regardless, so the job passed
-  while its name claimed coverage it did not have, and 3.10 -- the actual floor,
-  where wheels are most likely to break -- was never built. The matrix is now
-  `[3.10, 3.14]`.
+- The CI build matrix tested Python 3.9, below the `requires-python = ">=3.10"` floor. uv resolves a supported interpreter regardless, so the job passed while its name claimed coverage it did not have, and 3.10 -- the actual floor, where wheels are most likely to break -- was never built. The matrix is now `[3.10, 3.14]`.
 
-- Windows wheels were built with cibuildwheel v2.23 while Linux and macOS used
-  v3.3.1.
+- Windows wheels were built with cibuildwheel v2.23 while Linux and macOS used v3.3.1.
 
 - Duplicate `phase_invert` entry in `__all__`.
 
@@ -83,10 +66,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `make qa` runs `format` first so lint and tests see the formatted tree, and now includes `stubs-check`.
 
-- Tightened duration tolerances that were too wide to catch a regression.
-  `time_stretch` was asserted only to land within 50-250% of the requested
-  duration and is now held to 5% (measured error is 2-3%); `retime` moved from
-  20% to 10%.
+- Tightened duration tolerances that were too wide to catch a regression. `time_stretch` was asserted only to land within 50-250% of the requested duration and is now held to 5% (measured error is 2-3%); `retime` moved from 20% to 10%.
 
 ### Added
 
@@ -104,31 +84,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `cython` in the dev dependency group, required at test time by `Cython.Coverage` to map `.pyx` lines.
 
-- Ruff, mypy and pytest configuration in `pyproject.toml`. Both linters
-  previously ran at their defaults, which is why the wrong stub return types
-  and the `Buffer` protocol gaps went unreported. Ruff now also runs import
-  sorting, bugbear, pyupgrade and comprehension rules; mypy runs with
-  `check_untyped_defs`; pytest treats warnings as errors and rejects unknown
-  config keys and marks.
+- Ruff, mypy and pytest configuration in `pyproject.toml`. Both linters previously ran at their defaults, which is why the wrong stub return types and the `Buffer` protocol gaps went unreported. Ruff now also runs import sorting, bugbear, pyupgrade and comprehension rules; mypy runs with `check_untyped_defs`; pytest treats warnings as errors and rejects unknown config keys and marks.
 
-- `tests/test_readme.py` executes every Python example in README.md against
-  the real API, so documentation rot fails the suite. Documentation was the
-  fourth hand-maintained copy of the API after `_core.pyx`, `_core.pyi` and
-  the CLI registry; the other three are now generated or verified.
+- `tests/test_readme.py` executes every Python example in README.md against the real API, so documentation rot fails the suite. Documentation was the fourth hand-maintained copy of the API after `_core.pyx`, `_core.pyi` and the CLI registry; the other three are now generated or verified.
 
-- `tests/test_packaging.py` keeps the four declarations of supported Python
-  versions in agreement -- `requires-python`, the classifiers, the CI build
-  matrix and `CIBW_BUILD` -- and fails if the cibuildwheel action version is
-  skewed across OS jobs.
+- `tests/test_packaging.py` keeps the four declarations of supported Python versions in agreement -- `requires-python`, the classifiers, the CI build matrix and `CIBW_BUILD` -- and fails if the cibuildwheel action version is skewed across OS jobs.
 
-- Return-type verification, in two layers. `tests/test_signatures.py` calls
-  every function whose declared return is not a plain `Buffer` and checks the
-  result, and fails if such a function is added without a runtime case. That
-  covers where the mistakes were, but leaves the ~118 functions declared
-  `-> Buffer` merely assumed, so `tests/conftest.py` additionally records what
-  every public function actually returns during the run and fails the session
-  on any contradiction with the stub. All 132 declared functions are exercised
-  by the suite, so the recording is complete rather than partial.
+- Return-type verification, in two layers. `tests/test_signatures.py` calls every function whose declared return is not a plain `Buffer` and checks the result, and fails if such a function is added without a runtime case. That covers where the mistakes were, but leaves the ~118 functions declared `-> Buffer` merely assumed, so `tests/conftest.py` additionally records what every public function actually returns during the run and fails the session on any contradiction with the stub. All 132 declared functions are exercised by the suite, so the recording is complete rather than partial.
 
 - A Concurrency section in README.md, with a runnable `ThreadPoolExecutor` example. The example is executed by the test suite like every other README snippet.
 
@@ -138,24 +100,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `tests/test_rng.py` pinning the three properties that matter for randomised operations: a fixed seed reproduces, different seeds differ, and no call perturbs the process-global `rand()` sequence (checked in a subprocess so test ordering cannot mask a regression). Two static guards reject any reintroduction of `srand`/`rand` or of file-static PRNG state in the C sources; the first of these found the `cdp_flutter.c` and `cdp_hover.c` generators, which the original review had missed.
 
-- `tests/conftest.py` with shared signal fixtures and analysis helpers: a
-  Goertzel single-bin DFT, RMS, peak and duration measures. No numpy
-  dependency; the suite still runs on `array.array` alone.
+- `tests/conftest.py` with shared signal fixtures and analysis helpers: a Goertzel single-bin DFT, RMS, peak and duration measures. No numpy dependency; the suite still runs on `array.array` alone.
 
-- `tests/test_dsp_behaviour.py` (46 tests) asserting what operations do to the
-  signal rather than that they merely return something: filters separate
-  passband from stopband by more than 40 dB, `pitch_shift` moves the
-  fundamental to the expected frequency and vacates the original, `ring_mod`
-  produces symmetric sidebands with the carrier suppressed, `limiter` enforces
-  its ceiling, higher compression ratios compress harder, and gain and
-  normalize hit their targets to within 0.01%. Each bound was measured against
-  the implementation first, then verified to fail when fed the output of a
-  deliberately wrong operation.
+- `tests/test_dsp_behaviour.py` (46 tests) asserting what operations do to the signal rather than that they merely return something: filters separate passband from stopband by more than 40 dB, `pitch_shift` moves the fundamental to the expected frequency and vacates the original, `ring_mod` produces symmetric sidebands with the carrier suppressed, `limiter` enforces its ceiling, higher compression ratios compress harder, and gain and normalize hit their targets to within 0.01%. Each bound was measured against the implementation first, then verified to fail when fed the output of a deliberately wrong operation.
 
-- `tests/test_validation.py` (28 tests) covering the invalid-input paths --
-  out-of-range indices, uninitialised buffers, non-positive stretch factors,
-  empty buffer lists, unknown format and curve names, missing and malformed
-  files. These were 71 of the previously unexercised lines in `_core.pyx`.
+- `tests/test_validation.py` (28 tests) covering the invalid-input paths -- out-of-range indices, uninitialised buffers, non-positive stretch factors, empty buffer lists, unknown format and curve names, missing and malformed files. These were 71 of the previously unexercised lines in `_core.pyx`.
 
 ## [0.1.2]
 
