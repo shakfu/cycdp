@@ -70,6 +70,11 @@ testpaths = ["tests"]
 # ignoring it, and treat warnings as errors so deprecations are not accumulated
 # silently across Cython/CPython upgrades.
 addopts = "--strict-markers --strict-config"
+markers = [
+    # Wall-clock sensitive. Deselected for cibuildwheel's wheel smoke-test,
+    # which runs under emulation on shared runners where timing is meaningless.
+    "timing: measures elapsed time or throughput",
+]
 filterwarnings = ["error"]
 
 [tool.ruff]

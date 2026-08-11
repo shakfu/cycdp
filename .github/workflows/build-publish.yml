@@ -23,7 +23,13 @@ env:
   CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-*"
   CIBW_SKIP: "*-musllinux_*"
   CIBW_TEST_REQUIRES: pytest
-  CIBW_TEST_COMMAND: pytest {project}/tests -v
+  # -m "not timing" excludes the wall-clock tests. cibuildwheel runs this in an
+  # isolated venv on shared runners, and on macOS under x86_64 emulation, where
+  # throughput figures are meaningless -- an early GIL-retention threshold
+  # failed here at 0.385 purely from emulation overhead. The point of the wheel
+  # test is that the built artifact imports and works; the timing tests run in
+  # the CI workflow on a normal build.
+  CIBW_TEST_COMMAND: pytest {project}/tests -v -m "not timing"
 
 jobs:
   build-sdist:
