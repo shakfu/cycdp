@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+#
+# Build the extension with AddressSanitizer + UBSan and run the test suite
+# under them.
+#
+# Why this exists: the unchecked-allocation and out-of-bounds class of bug is
+# invisible to the test suite. Those tests report a clean pass right up until a
+# NULL dereference or overflow takes down the interpreter, and a plain segfault
+# tells you nothing about where. ASan turns them into a precise report -- it is
+# how the cdp_spectral_time_stretch heap-buffer-overflow was diagnosed.
+#
+# Python itself is not instrumented, so the sanitizer runtime has to be
+# preloaded into the interpreter before the instrumented .so is dlopen'd.
+#
+# Usage:  scripts/run_sanitizers.sh [extra pytest args...]
+
+set -euo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO"
+
+BUILD_DIR="${CYCDP_SAN_BUILD_DIR:-build/sanitize}"
+PYTHON="${CYCDP_PYTHON:-$REPO/.venv/bin/python}"
+
+if [ ! -x "$PYTHON" ]; then
+    echo "error: no interpreter at $PYTHON (run 'make sync', or set CYCDP_PYTHON)" >&2
+    exit 1
+fi
+
+echo "==> Configuring sanitizer build in $BUILD_DIR"
+cmake -S . -B "$BUILD_DIR" \
+    -DCYCDP_SANITIZE=ON \
+    -DPython_EXECUTABLE="$PYTHON" \
+    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    >/dev/null
+
+echo "==> Building"
+cmake --build "$BUILD_DIR" -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+
+SO="$(find "$BUILD_DIR" -name '_core*.so' -o -name '_core*.pyd' | head -1)"
+if [ -z "$SO" ]; then
+    echo "error: no built extension found under $BUILD_DIR" >&2
+    exit 1
+fi
+
+# Install the instrumented module over the one in site-packages, and put the
+# original back on exit however this script ends.
+#
+# Locate the package without importing it: if a previous interrupted run left
+# an instrumented .so in place, importing cycdp here would dlopen it before the
+# sanitizer runtime is preloaded, and ASan aborts with "Interceptors are not
+# working".
+SITE_PKG="$("$PYTHON" -c 'import os, sysconfig; print(os.path.join(sysconfig.get_paths()["purelib"], "cycdp"))')"
+if [ ! -d "$SITE_PKG" ]; then
+    echo "error: cycdp is not installed at $SITE_PKG (run 'make sync')" >&2
+    exit 1
+fi
+TARGET="$SITE_PKG/$(basename "$SO")"
+BACKUP="$(mktemp -t cycdp_core_backup.XXXXXX)"
+
+restore() {
+    if [ -f "$BACKUP" ] && [ -s "$BACKUP" ]; then
+        cp "$BACKUP" "$TARGET"
+        echo "==> Restored the original (non-instrumented) extension"
+    fi
+    rm -f "$BACKUP"
+}
+trap restore EXIT
+
+if [ -f "$TARGET" ]; then
+    cp "$TARGET" "$BACKUP"
+fi
+cp "$SO" "$TARGET"
+
+# detect_leaks=0: CPython does not free its interpreter state at exit, so leak
+# detection reports thousands of false positives that drown out real findings.
+# Memory *errors* -- overflows, use-after-free, NULL derefs -- are still caught.
+export ASAN_OPTIONS="detect_leaks=0:detect_container_overflow=0:abort_on_error=0"
+export UBSAN_OPTIONS="print_stacktrace=1"
+
+case "$(uname -s)" in
+    Darwin)
+        RUNTIME="$(clang -print-file-name=libclang_rt.asan_osx_dynamic.dylib)"
+        export DYLD_INSERT_LIBRARIES="$RUNTIME"
+        # macOS strips DYLD_* when spawning a child process, so tests that
+        # re-exec Python would load the instrumented module without the
+        # runtime and die. Those subprocess tests are covered by the ordinary
+        # (non-sanitizer) CI run.
+        EXTRA_ARGS=(--deselect tests/test_cli.py::TestEntryPoint)
+        ;;
+    Linux)
+        RUNTIME="$(gcc -print-file-name=libasan.so 2>/dev/null || true)"
+        if [ -z "$RUNTIME" ] || [ "$RUNTIME" = "libasan.so" ]; then
+            RUNTIME="$(clang -print-file-name=libclang_rt.asan-x86_64.so)"
+        fi
+        export LD_PRELOAD="$RUNTIME"
+        # LD_PRELOAD is inherited by children, so subprocess tests work here.
+        EXTRA_ARGS=()
+        ;;
+    *)
+        echo "error: sanitizer runs are not wired up for $(uname -s)" >&2
+        exit 1
+        ;;
+esac
+
+echo "==> Sanitizer runtime: $RUNTIME"
+echo "==> Running tests"
+"$PYTHON" -m pytest tests/ -q -p no:cacheprovider "${EXTRA_ARGS[@]}" "$@"

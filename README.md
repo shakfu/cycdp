@@ -11,8 +11,11 @@ Historically, CDP programs are invoked as standalone command-line executables th
 ### Design principles
 
 - **Zero-copy interop.** Cython memoryviews and the buffer protocol mean data passes between Python and C without copying.
+
 - **No numpy dependency.** Operates on any object supporting the Python buffer protocol (`array.array`, `memoryview`, numpy arrays, etc.). Numpy is optional, not required.
+
 - **Functional API.** Most functions accept a buffer and return a new buffer, leaving the original unchanged. Low-level in-place alternatives are also available.
+
 - **Self-contained.** The C library is compiled into the extension; no external CDP installation is needed.
 
 ## Features
@@ -460,8 +463,11 @@ These work with explicit Context and Buffer objects:
 ### Classes
 
 - `Context` - Processing context (holds error state)
+
 - `Buffer` - Audio buffer with buffer protocol support
+
   - `Buffer.create(frames, channels, sample_rate)` - Create new buffer
+
   - Supports indexing, len(), and memoryview
 
 ### Constants
@@ -469,23 +475,33 @@ These work with explicit Context and Buffer objects:
 **Processing flags:**
 
 - `FLAG_NONE` - No processing flags
+
 - `FLAG_CLIP` - Clip output to [-1.0, 1.0]
 
 **Waveform types (for `synth_wave`):**
 
 - `WAVE_SINE` - Sine wave
+
 - `WAVE_SQUARE` - Square wave
+
 - `WAVE_SAW` - Sawtooth wave
+
 - `WAVE_RAMP` - Ramp (reverse sawtooth) wave
+
 - `WAVE_TRIANGLE` - Triangle wave
 
 **Scramble modes (for `scramble`):**
 
 - `SCRAMBLE_SHUFFLE` - Random shuffle
+
 - `SCRAMBLE_REVERSE` - Reverse order
+
 - `SCRAMBLE_SIZE_UP` - Sort by size (smallest first)
+
 - `SCRAMBLE_SIZE_DOWN` - Sort by size (largest first)
+
 - `SCRAMBLE_LEVEL_UP` - Sort by level (quietest first)
+
 - `SCRAMBLE_LEVEL_DOWN` - Sort by level (loudest first)
 
 ### Exceptions
@@ -630,12 +646,19 @@ make help
 To add more CDP operations:
 
 1. Add C implementation to `projects/libcdp/cdp_lib/<operation>.c`
+
 2. Add function declarations to appropriate header in `projects/libcdp/cdp_lib/`
+
 3. Export from `projects/libcdp/cdp_lib/cdp_lib.h`
+
 4. Update `CMakeLists.txt` to include new source file
+
 5. Add Cython declarations to `src/cycdp/cdp_lib.pxd`
+
 6. Add Cython bindings to `src/cycdp/_core.pyx`
+
 7. Export from `src/cycdp/__init__.py`
+
 8. Add tests to `tests/`
 
 ## License

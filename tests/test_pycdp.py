@@ -854,6 +854,20 @@ class TestSpectral:
         assert compressed.frame_count > original_frames * 0.3
         assert compressed.frame_count < original_frames * 0.7
 
+    @pytest.mark.parametrize("frames", [1024, 1025, 1100, 1536, 2048])
+    def test_time_stretch_short_input_does_not_crash(self, frames):
+        """Inputs barely longer than the FFT window must not read out of bounds.
+
+        An input of exactly fft_size yields a single analysis frame, and the
+        frame-interpolation clamp assumed at least two, reading frames[1] one
+        past the end. Found by AddressSanitizer (heap-buffer-overflow in
+        cdp_spectral_time_stretch); before the fix this segfaulted the
+        interpreter rather than raising.
+        """
+        buf = cycdp.Buffer.create(frames, channels=1, sample_rate=44100)
+        result = cycdp.time_stretch(buf, factor=2.0)
+        assert result.frame_count > 0
+
     def test_spectral_blur(self, sine_wave):
         """Spectral blur should run without error."""
         blurred = cycdp.spectral_blur(sine_wave, blur_time=0.05)

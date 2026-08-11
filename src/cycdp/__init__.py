@@ -380,8 +380,8 @@ __all__ = [
     "hover",
     # Silence constriction
     "constrict",
-    # Phase manipulation
-    "phase_invert",
+    # Phase manipulation ("phase_invert" is listed with the high-level
+    # functions above -- it accepts both a Buffer and a raw float32 buffer)
     "phase_stereo",
     # Granular texture
     "wrappage",

@@ -704,3 +704,66 @@ class TestEntryPoint:
         )
         assert result.returncode == 0
         assert "time-stretch" in result.stdout
+
+
+# =============================================================================
+# Output normalization policy
+# =============================================================================
+
+
+class TestNormalizationPolicy:
+    """Amplitude commands must not have their output level silently rewritten.
+
+    Regression guard: the default -n 0.95 normalization used to be applied
+    unconditionally, which made gain/limiter/normalize no-ops -- a 20x
+    difference in requested gain produced the same output peak.
+    """
+
+    def test_gain_is_not_renormalized(self, wav_file, tmp_path):
+        """Requested gain must survive to the output file."""
+        quiet = str(tmp_path / "quiet.wav")
+        loud = str(tmp_path / "loud.wav")
+        main(["gain", wav_file, "--gain-factor", "0.1", "-o", quiet])
+        main(["gain", wav_file, "--gain-factor", "0.5", "-o", loud])
+
+        source_peak = cycdp.peak(cycdp.read_file(wav_file))[0]
+        quiet_peak = cycdp.peak(cycdp.read_file(quiet))[0]
+        loud_peak = cycdp.peak(cycdp.read_file(loud))[0]
+
+        assert quiet_peak == pytest.approx(source_peak * 0.1, rel=1e-3)
+        assert loud_peak == pytest.approx(source_peak * 0.5, rel=1e-3)
+        # The whole point: different gains produce different levels.
+        assert loud_peak > quiet_peak * 4
+
+    def test_limiter_threshold_is_honoured(self, wav_file, tmp_path):
+        """A -20 dB ceiling must actually cap the output near 0.1."""
+        out = str(tmp_path / "limited.wav")
+        main(["limiter", wav_file, "--threshold-db", "-20", "-o", out])
+        peak = cycdp.peak(cycdp.read_file(out))[0]
+        assert peak == pytest.approx(0.1, abs=0.02)
+
+    def test_explicit_normalize_still_applies(self, wav_file, tmp_path):
+        """Opting in with -n must override the per-command exemption."""
+        out = str(tmp_path / "forced.wav")
+        main(["gain", wav_file, "--gain-factor", "0.1", "-n", "0.5", "-o", out])
+        assert cycdp.peak(cycdp.read_file(out))[0] == pytest.approx(0.5, rel=1e-3)
+
+    def test_non_amplitude_command_still_auto_normalizes(self, wav_file, tmp_path):
+        """Spectral/effect commands keep the 0.95 default."""
+        out = str(tmp_path / "verb.wav")
+        main(["reverb", wav_file, "--decay-time", "1.0", "-o", out])
+        assert cycdp.peak(cycdp.read_file(out))[0] == pytest.approx(0.95, rel=1e-3)
+
+    def test_no_normalize_flag_still_works(self, wav_file, tmp_path):
+        """--no-normalize must suppress normalization for normalized commands."""
+        out = str(tmp_path / "raw.wav")
+        main(["reverb", wav_file, "--decay-time", "1.0", "--no-normalize", "-o", out])
+        assert cycdp.peak(cycdp.read_file(out))[0] != pytest.approx(0.95, rel=1e-3)
+
+    def test_exempt_commands_are_all_real_commands(self):
+        """NO_AUTO_NORMALIZE must not drift out of sync with the registry."""
+        from cycdp.cli import NO_AUTO_NORMALIZE
+
+        for name in NO_AUTO_NORMALIZE:
+            assert name in COMMANDS, f"{name} is not a registered command"
+            assert COMMANDS[name]["input"] in ("single", "dual", "synth")

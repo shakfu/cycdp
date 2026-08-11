@@ -28,22 +28,76 @@ jobs:
         run: uv sync --dev
 
       - name: Lint with ruff
-        run: uv run ruff check src/ tests/
+        run: uv run ruff check src/ tests/ scripts/
 
       - name: Check formatting with ruff
-        run: uv run ruff format --check src/ tests/
+        run: uv run ruff format --check src/ tests/ scripts/
+
+      - name: Check type stubs are up to date
+        run: uv run python scripts/gen_stubs.py --check
 
       - name: Type check with mypy
-        run: uv run mypy src/cycdp/__init__.py tests/ --exclude '.venv'
+        run: uv run mypy src/cycdp/ tests/ --exclude '.venv'
 
       - name: Run tests
-        run: uv run pytest tests/ -v --cov=src/cycdp --cov-report=xml
+        run: uv run pytest tests/ -v
+
+  coverage:
+    name: Coverage (with Cython line tracing)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      # The extension must be rebuilt with CYCDP_COVERAGE=ON or coverage cannot
+      # see _core.pyx -- 6,400 lines, the whole library -- and reports a
+      # confident total describing only cli.py. --no-cache because uv keys its
+      # build cache on source content, not the environment, and would otherwise
+      # return a non-instrumented wheel.
+      - name: Build instrumented extension
+        run: SKBUILD_CMAKE_DEFINE=CYCDP_COVERAGE=ON uv sync --dev --no-cache
+
+      # tests/test_coverage_setup.py fails here if the instrumentation silently
+      # stopped working, rather than letting a misleading number through.
+      - name: Run tests with coverage
+        run: uv run pytest tests/ -v --cov --cov-report=xml --cov-report=term
 
       - name: Upload coverage
         uses: codecov/codecov-action@v5
         with:
           files: coverage.xml
           fail_ci_if_error: false
+
+  sanitize:
+    name: Sanitizers (ASan + UBSan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      # Catches the unchecked-allocation and out-of-bounds class of bug, which
+      # the ordinary suite cannot see: those tests pass cleanly right up until
+      # a NULL dereference or overflow takes down the interpreter. This is how
+      # the cdp_spectral_time_stretch heap-buffer-overflow was found.
+      - name: Build with sanitizers and run tests
+        run: make sanitize
 
   build:
     name: Build (${{ matrix.os }}/${{ matrix.python-version }})

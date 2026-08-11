@@ -7,6 +7,35 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 find_package(Python REQUIRED COMPONENTS Interpreter Development.Module)
 
 # =============================================================================
+# Sanitizers
+# =============================================================================
+# CYCDP_SANITIZE builds the C layer and the extension with AddressSanitizer and
+# UndefinedBehaviorSanitizer. This is how the unchecked-allocation class of bug
+# (H3) is kept closed: those crashes are invisible to the test suite, which
+# reports a clean pass right up until a NULL dereference takes down the
+# interpreter. See `make sanitize` and the sanitize CI job.
+#
+# Never enable for released wheels: it is slow and changes the ABI expectations
+# of the process it loads into.
+option(CYCDP_SANITIZE "Build with AddressSanitizer and UBSan" OFF)
+
+if(CYCDP_SANITIZE)
+    if(MSVC)
+        message(FATAL_ERROR "CYCDP_SANITIZE is not supported with MSVC")
+    endif()
+    # -fno-omit-frame-pointer keeps stack traces readable; -g gives them line
+    # numbers. -fno-sanitize-recover makes UBSan findings fail the run instead
+    # of printing and continuing, which is what makes this useful in CI.
+    add_compile_options(
+        -fsanitize=address,undefined
+        -fno-sanitize-recover=all
+        -fno-omit-frame-pointer
+        -g
+    )
+    add_link_options(-fsanitize=address,undefined)
+endif()
+
+# =============================================================================
 # Build libcdp (the C library)
 # =============================================================================
 set(LIBCDP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/projects/libcdp")
@@ -91,14 +120,59 @@ endif()
 # =============================================================================
 # Build Cython extension
 # =============================================================================
+# CYCDP_COVERAGE builds the extension with Cython line tracing so that
+# coverage.py can see _core.pyx. It roughly halves execution speed and adds a
+# trace call per line, so it is OFF by default and must never be used for
+# released wheels. See `make coverage`.
+option(CYCDP_COVERAGE "Instrument the Cython extension for coverage.py" OFF)
+
+if(CYCDP_COVERAGE)
+    # Cython.Coverage locates the generated C file next to the .pyx to rebuild
+    # its line map, so emit it into the source tree (gitignored) rather than
+    # the throwaway build directory. --absolute-paths makes the embedded source
+    # path resolvable from the repo root; see scripts/run_cython.py.
+    set(CYTHON_OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/src/cycdp/_core.c")
+    set(CYTHON_DRIVER_ARGS --absolute-paths --)
+    set(CYTHON_EXTRA_ARGS --directive linetrace=True --directive binding=True)
+else()
+    set(CYTHON_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/_core.c")
+    set(CYTHON_DRIVER_ARGS --)
+    set(CYTHON_EXTRA_ARGS)
+endif()
+
+# WORKING_DIRECTORY matters for coverage builds: Cython writes the embedded
+# source path relative to its own cwd, which would otherwise be scikit-build's
+# deep temporary build directory and produce a machine-specific "../../.."
+# chain. Running from the source root yields a plain "src/cycdp/_core.pyx".
 add_custom_command(
-    OUTPUT _core.c
-    COMMAND Python::Interpreter -m cython
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/cycdp/_core.pyx" --output-file _core.c
-    DEPENDS src/cycdp/_core.pyx
+    OUTPUT "${CYTHON_OUTPUT}"
+    COMMAND Python::Interpreter
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_cython.py"
+        ${CYTHON_DRIVER_ARGS}
+        "src/cycdp/_core.pyx"
+        ${CYTHON_EXTRA_ARGS} --output-file "${CYTHON_OUTPUT}"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    DEPENDS src/cycdp/_core.pyx scripts/run_cython.py
 )
 
-python_add_library(_core MODULE _core.c WITH_SOABI)
+python_add_library(_core MODULE "${CYTHON_OUTPUT}" WITH_SOABI)
+
+if(CYCDP_COVERAGE)
+    # CYTHON_TRACE_NOGIL implies CYTHON_TRACE and also traces nogil blocks.
+    #
+    # CYTHON_USE_SYS_MONITORING=0 is the load-bearing part on Python 3.12+.
+    # Cython otherwise instruments via PEP 669 sys.monitoring, but coverage.py
+    # only supports file_tracer plugins (which is how Cython.Coverage maps
+    # .pyx lines) on its settrace-based cores. The two never meet, and the
+    # symptom is silent: the build succeeds, tests pass, and _core.pyx simply
+    # never appears in the report. Forcing the legacy trace path makes Cython
+    # emit settrace-compatible hooks that the plugin can see.
+    target_compile_definitions(_core PRIVATE
+        CYTHON_TRACE=1
+        CYTHON_TRACE_NOGIL=1
+        CYTHON_USE_SYS_MONITORING=0
+    )
+endif()
 
 # Link against libcdp and cdp_lib
 target_link_libraries(_core PRIVATE cdp cdp_lib)

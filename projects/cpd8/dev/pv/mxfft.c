@@ -119,20 +119,44 @@ int fft_(float *a, float *b, int nseg, int n, int nspn, int isn)
     if(kt > 0) 
         maxf = max(nfac[kt],maxf);
 
-/*  allocate workspace - assume no errors! */
+/*  allocate workspace
+ *  cycdp patch: upstream read "assume no errors!" and dereferenced these
+ *  unconditionally, so an allocation failure segfaulted the host process.
+ *  fft_ is called once per analysis frame, so this is on a hot path.
+ */
     at = (float *) calloc(maxf,sizeof(float));
     ck = (float *) calloc(maxf,sizeof(float));
     bt = (float *) calloc(maxf,sizeof(float));
     sk = (float *) calloc(maxf,sizeof(float));
     np = (int *) calloc(maxp,sizeof(int));
 
+    if(at==NULL || ck==NULL || bt==NULL || sk==NULL || np==NULL) {
+        (void) free(at);
+        (void) free(ck);
+        (void) free(bt);
+        (void) free(sk);
+        (void) free(np);
+        sprintf(errstr,"insufficient memory for FFT workspace (n = %d)", n);
+        return(MEMORY_ERROR);
+    }
+
 /* decrement pointers to allow FORTRAN type usage in fftmx */
     at--;   bt--;   ck--;   sk--;   np--;
 
 /* call fft driver */
 
-    if((exit_status = fftmx(a,b,ntot,nf,nspn,isn,m,&kt,at,ck,bt,sk,np,nfac))<0)
+    if((exit_status = fftmx(a,b,ntot,nf,nspn,isn,m,&kt,at,ck,bt,sk,np,nfac))<0) {
+        /* cycdp patch: upstream returned here without freeing the workspace.
+           Restore the FORTRAN-style offset first so free() sees the real
+           allocation addresses. */
+        at++;   bt++;   ck++;   sk++;   np++;
+        (void) free(at);
+        (void) free(ck);
+        (void) free(bt);
+        (void) free(sk);
+        (void) free(np);
         return(exit_status);
+    }
 
 /* restore pointers before releasing */
     at++;   bt++;   ck++;   sk++;   np++;

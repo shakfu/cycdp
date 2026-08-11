@@ -44,6 +44,9 @@ Changelog = "https://github.com/shakfu/cycdp/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
+    # cython is a build requirement, but coverage.py needs it importable at
+    # test time too: Cython.Coverage is the plugin that maps _core.pyx lines.
+    "cython>=3.0",
     "mypy>=1.19.1",
     "pytest>=8.4.2",
     "pytest-cov>=7.0.0",
@@ -54,6 +57,29 @@ dev = [
 [build-system]
 requires = ["scikit-build-core>=0.8", "cython"]
 build-backend = "scikit_build_core.build"
+
+# Coverage only sees the Cython extension when it was built with line tracing.
+# Always measure via `make coverage`, which rebuilds with CYCDP_COVERAGE=ON.
+# Running --cov against an ordinary build silently omits _core.pyx -- 6,400
+# lines, the whole library -- while still printing a confident total that
+# describes only cli.py. tests/test_coverage_setup.py fails when that happens
+# rather than letting the misleading number through.
+[tool.coverage.run]
+plugins = ["Cython.Coverage"]
+branch = true
+source = ["src/cycdp"]
+
+[tool.coverage.report]
+show_missing = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",
+]
+
+[tool.coverage.paths]
+# Map the installed copy back onto the source tree so line data merges.
+source = ["src/cycdp", "**/site-packages/cycdp"]
 
 [tool.scikit-build]
 wheel.packages = ["src/cycdp"]

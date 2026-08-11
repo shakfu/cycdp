@@ -245,10 +245,26 @@ cdp_formant_data* cdp_lib_formants(cdp_lib_ctx* ctx, const cdp_lib_buffer* input
     result->frame_time = (float)hop_size / input->sample_rate;
     result->sample_rate = (float)input->sample_rate;
 
+    if (!result->f1 || !result->f2 || !result->f3 || !result->f4 ||
+        !result->b1 || !result->b2 || !result->b3 || !result->b4) {
+        cdp_formant_data_free(result);
+        cdp_lib_buffer_free(mono);
+        cdp_lib_set_error(ctx, "Out of memory in formant analysis");
+        return NULL;
+    }
+
     float *frame = (float *)malloc(frame_size * sizeof(float));
     float *r = (float *)malloc((lpc_order + 1) * sizeof(float));
     float *a = (float *)calloc(lpc_order, sizeof(float));
     float formants[4], bandwidths[4];
+
+    if (!frame || !r || !a) {
+        free(frame); free(r); free(a);
+        cdp_formant_data_free(result);
+        cdp_lib_buffer_free(mono);
+        cdp_lib_set_error(ctx, "Out of memory in formant analysis");
+        return NULL;
+    }
 
     for (int f = 0; f < num_frames; f++) {
         size_t start = f * hop_size;
@@ -373,6 +389,12 @@ cdp_partial_data* cdp_lib_get_partials(cdp_lib_ctx* ctx, const cdp_lib_buffer* i
     int *ts = (int *)calloc(next_track_id, sizeof(int));
     int *te = (int *)calloc(next_track_id, sizeof(int));
     int *tc = (int *)calloc(next_track_id, sizeof(int));
+    if (!ts || !te || !tc) {
+        free(ts); free(te); free(tc);
+        free(tracks); free(points);
+        cdp_lib_set_error(ctx, "Out of memory in partial tracking");
+        return NULL;
+    }
     for (int i = 0; i < next_track_id; i++) { ts[i] = num_frames; te[i] = -1; }
     for (int i = 0; i < num_points; i++) {
         int tid = points[i].id;
@@ -388,6 +410,11 @@ cdp_partial_data* cdp_lib_get_partials(cdp_lib_ctx* ctx, const cdp_lib_buffer* i
     if (valid > max_partials) valid = max_partials;
 
     cdp_partial_data *result = (cdp_partial_data *)calloc(1, sizeof(cdp_partial_data));
+    if (!result) {
+        free(tracks); free(points); free(ts); free(te); free(tc);
+        cdp_lib_set_error(ctx, "Out of memory in partial tracking");
+        return NULL;
+    }
     result->tracks = (cdp_partial_track *)calloc(valid, sizeof(cdp_partial_track));
     result->num_tracks = valid;
     result->total_frames = num_frames;
@@ -395,12 +422,26 @@ cdp_partial_data* cdp_lib_get_partials(cdp_lib_ctx* ctx, const cdp_lib_buffer* i
     result->sample_rate = (float)input->sample_rate;
     result->fft_size = fft_size;
 
+    if (!result->tracks) {
+        cdp_partial_data_free(result);
+        free(tracks); free(points); free(ts); free(te); free(tc);
+        cdp_lib_set_error(ctx, "Out of memory in partial tracking");
+        return NULL;
+    }
+
     int ri = 0;
     for (int tid = 0; tid < next_track_id && ri < valid; tid++) {
         if (tc[tid] < 3) continue;
         int len = te[tid] - ts[tid] + 1;
         result->tracks[ri].freq = (float *)calloc(len, sizeof(float));
         result->tracks[ri].amp = (float *)calloc(len, sizeof(float));
+        /* tracks[] is zeroed, so a partially built result frees cleanly. */
+        if (!result->tracks[ri].freq || !result->tracks[ri].amp) {
+            cdp_partial_data_free(result);
+            free(tracks); free(points); free(ts); free(te); free(tc);
+            cdp_lib_set_error(ctx, "Out of memory in partial tracking");
+            return NULL;
+        }
         result->tracks[ri].start_frame = ts[tid];
         result->tracks[ri].end_frame = te[tid];
         result->tracks[ri].num_frames = len;
@@ -464,6 +505,10 @@ cdp_pitch_data* cdp_lib_pitch_from_spectrum(cdp_lib_ctx* ctx, const cdp_spectral
     if (num_peaks > 16) num_peaks = 16;
 
     cdp_pitch_data *result = (cdp_pitch_data *)calloc(1, sizeof(cdp_pitch_data));
+    if (!result) {
+        cdp_lib_set_error(ctx, "Out of memory in pitch analysis");
+        return NULL;
+    }
     result->pitch = (float *)calloc(spectral->num_frames, sizeof(float));
     result->confidence = (float *)calloc(spectral->num_frames, sizeof(float));
     result->num_frames = spectral->num_frames;
@@ -472,6 +517,13 @@ cdp_pitch_data* cdp_lib_pitch_from_spectrum(cdp_lib_ctx* ctx, const cdp_spectral
 
     float *pf = (float *)malloc(num_peaks * sizeof(float));
     float *pa = (float *)malloc(num_peaks * sizeof(float));
+
+    if (!result->pitch || !result->confidence || !pf || !pa) {
+        free(pf); free(pa);
+        cdp_pitch_data_free(result);
+        cdp_lib_set_error(ctx, "Out of memory in pitch analysis");
+        return NULL;
+    }
 
     for (int f = 0; f < spectral->num_frames; f++) {
         float *amp = spectral->frames[f].data;
@@ -494,6 +546,10 @@ cdp_formant_data* cdp_lib_formants_from_spectrum(cdp_lib_ctx* ctx, const cdp_spe
     if (bands_per_octave > 12) bands_per_octave = 12;
 
     cdp_formant_data *result = (cdp_formant_data *)calloc(1, sizeof(cdp_formant_data));
+    if (!result) {
+        cdp_lib_set_error(ctx, "Out of memory in formant analysis");
+        return NULL;
+    }
     result->f1 = (float *)calloc(spectral->num_frames, sizeof(float));
     result->f2 = (float *)calloc(spectral->num_frames, sizeof(float));
     result->f3 = (float *)calloc(spectral->num_frames, sizeof(float));
@@ -505,6 +561,13 @@ cdp_formant_data* cdp_lib_formants_from_spectrum(cdp_lib_ctx* ctx, const cdp_spe
     result->num_frames = spectral->num_frames;
     result->frame_time = spectral->frame_time;
     result->sample_rate = spectral->sample_rate;
+
+    if (!result->f1 || !result->f2 || !result->f3 || !result->f4 ||
+        !result->b1 || !result->b2 || !result->b3 || !result->b4) {
+        cdp_formant_data_free(result);
+        cdp_lib_set_error(ctx, "Out of memory in formant analysis");
+        return NULL;
+    }
 
     float fpb = spectral->sample_rate / (2.0f * (spectral->num_bins - 1));
 
@@ -543,6 +606,10 @@ cdp_partial_data* cdp_lib_partials_from_spectrum(cdp_lib_ctx* ctx, const cdp_spe
     float fpb = spectral->sample_rate / (2.0f * (spectral->num_bins - 1));
 
     cdp_partial_data *result = (cdp_partial_data *)calloc(1, sizeof(cdp_partial_data));
+    if (!result) {
+        cdp_lib_set_error(ctx, "Out of memory in partial analysis");
+        return NULL;
+    }
     result->tracks = (cdp_partial_track *)calloc(max_harmonics, sizeof(cdp_partial_track));
     result->num_tracks = max_harmonics;
     result->total_frames = num_frames;
@@ -550,9 +617,21 @@ cdp_partial_data* cdp_lib_partials_from_spectrum(cdp_lib_ctx* ctx, const cdp_spe
     result->sample_rate = spectral->sample_rate;
     result->fft_size = spectral->fft_size;
 
+    if (!result->tracks) {
+        cdp_partial_data_free(result);
+        cdp_lib_set_error(ctx, "Out of memory in partial analysis");
+        return NULL;
+    }
+
     for (int h = 0; h < max_harmonics; h++) {
         result->tracks[h].freq = (float *)calloc(num_frames, sizeof(float));
         result->tracks[h].amp = (float *)calloc(num_frames, sizeof(float));
+        /* tracks[] is zeroed, so a partially built result frees cleanly. */
+        if (!result->tracks[h].freq || !result->tracks[h].amp) {
+            cdp_partial_data_free(result);
+            cdp_lib_set_error(ctx, "Out of memory in partial analysis");
+            return NULL;
+        }
         result->tracks[h].start_frame = 0;
         result->tracks[h].end_frame = num_frames - 1;
         result->tracks[h].num_frames = num_frames;

@@ -277,6 +277,7 @@ float* cdp_spectral_synthesize(const cdp_spectral_data *spectral,
 cdp_spectral_data* cdp_spectral_time_stretch(const cdp_spectral_data *input,
                                               double factor) {
     if (input == NULL || factor <= 0) return NULL;
+    if (input->num_frames < 1 || input->frames == NULL) return NULL;
 
     int out_frames = (int)(input->num_frames * factor);
     if (out_frames < 1) out_frames = 1;
@@ -316,6 +317,16 @@ cdp_spectral_data* cdp_spectral_time_stretch(const cdp_spectral_data *input,
             frac = 0.0;
         }
 
+        /* The clamps above assume at least two input frames. With exactly one
+           (an input barely longer than the FFT window) they leave in_frame at
+           0 and the interpolation below then reads frames[1], one past the
+           end. Clamp the second index independently and interpolate against
+           the same frame. */
+        int in_frame_next = in_frame + 1;
+        if (in_frame_next >= input->num_frames) {
+            in_frame_next = input->num_frames - 1;
+        }
+
         /* Allocate output frame */
         output->frames[out_frame].data = (float *)malloc(num_bins * 2 * sizeof(float));
         output->frames[out_frame].num_bins = num_bins;
@@ -330,8 +341,8 @@ cdp_spectral_data* cdp_spectral_time_stretch(const cdp_spectral_data *input,
         /* Interpolate between frames */
         float *in_amp0 = input->frames[in_frame].data;
         float *in_freq0 = input->frames[in_frame].data + num_bins;
-        float *in_amp1 = input->frames[in_frame + 1].data;
-        float *in_freq1 = input->frames[in_frame + 1].data + num_bins;
+        float *in_amp1 = input->frames[in_frame_next].data;
+        float *in_freq1 = input->frames[in_frame_next].data + num_bins;
 
         float *out_amp = output->frames[out_frame].data;
         float *out_freq = output->frames[out_frame].data + num_bins;

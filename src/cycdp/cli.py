@@ -90,7 +90,29 @@ CATEGORIES = {
 #   "bool"       - boolean flag (store_true)
 #
 # Parameter names and defaults are matched exactly to the Cython source
-# (_core.pyx), NOT the .pyi stubs which may be inaccurate.
+# (_core.pyx). The test suite asserts this agreement (see
+# tests/test_signatures.py), so drift fails CI rather than reaching users.
+#
+# Commands listed in NO_AUTO_NORMALIZE are exempt from the default output
+# normalization, because for those the output level is the operation itself
+# and normalizing would silently discard the user's parameters.
+
+# Amplitude operations: normalizing their output to a fixed peak would undo
+# exactly what the command was asked to do. These still honour an explicit
+# -n/--normalize, they just do not get it by default.
+NO_AUTO_NORMALIZE = frozenset(
+    {
+        "gain",
+        "gain-db",
+        "normalize",
+        "normalize-db",
+        "limiter",
+        "compressor",
+        "gate",
+        "envelope-follow",
+        "envelope-apply",
+    }
+)
 
 COMMANDS: dict[str, dict[str, Any]] = {
     # -- spectral --
@@ -1601,13 +1623,25 @@ def build_parser() -> argparse.ArgumentParser:
                 "--output",
                 help="Output file path, or directory (auto-names file)",
             )
-            sub.add_argument(
-                "-n",
-                "--normalize",
-                type=float,
-                default=0.95,
-                help="Normalize output to this peak level (default: 0.95)",
-            )
+            if cmd_name in NO_AUTO_NORMALIZE:
+                sub.add_argument(
+                    "-n",
+                    "--normalize",
+                    type=float,
+                    default=None,
+                    help=(
+                        "Normalize output to this peak level "
+                        "(off by default for this command)"
+                    ),
+                )
+            else:
+                sub.add_argument(
+                    "-n",
+                    "--normalize",
+                    type=float,
+                    default=0.95,
+                    help="Normalize output to this peak level (default: 0.95)",
+                )
             sub.add_argument(
                 "--no-normalize",
                 action="store_true",
@@ -1709,6 +1743,18 @@ def prepare_kwargs(spec: dict, args: argparse.Namespace) -> dict:
 # =============================================================================
 
 
+def maybe_normalize(result, args: argparse.Namespace):
+    """Apply output normalization unless it is disabled for this invocation.
+
+    ``args.normalize`` is None for commands in NO_AUTO_NORMALIZE unless the
+    user passed -n explicitly, so amplitude operations keep the level they
+    were asked to produce.
+    """
+    if args.no_normalize or args.normalize is None:
+        return result
+    return cycdp.normalize(result, target=args.normalize)
+
+
 def handle_single(cmd_name: str, spec: dict, args: argparse.Namespace) -> None:
     input_path = args.input
     if not os.path.exists(input_path):
@@ -1720,8 +1766,7 @@ def handle_single(cmd_name: str, spec: dict, args: argparse.Namespace) -> None:
     kwargs = prepare_kwargs(spec, args)
     result = func(buf, **kwargs)
 
-    if not args.no_normalize:
-        result = cycdp.normalize(result, target=args.normalize)
+    result = maybe_normalize(result, args)
 
     output_path = resolve_output_path(args, cmd_name, input_path)
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
@@ -1741,8 +1786,7 @@ def handle_dual(cmd_name: str, spec: dict, args: argparse.Namespace) -> None:
     kwargs = prepare_kwargs(spec, args)
     result = func(buf1, buf2, **kwargs)
 
-    if not args.no_normalize:
-        result = cycdp.normalize(result, target=args.normalize)
+    result = maybe_normalize(result, args)
 
     output_path = resolve_output_path(args, cmd_name, args.input1)
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
@@ -1755,8 +1799,7 @@ def handle_synth(cmd_name: str, spec: dict, args: argparse.Namespace) -> None:
     kwargs = prepare_kwargs(spec, args)
     result = func(**kwargs)
 
-    if not args.no_normalize:
-        result = cycdp.normalize(result, target=args.normalize)
+    result = maybe_normalize(result, args)
 
     output_path = resolve_output_path(args, cmd_name)
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)

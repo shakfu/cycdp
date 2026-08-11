@@ -6,7 +6,8 @@
 
 .PHONY: all sync build rebuild test lint format typecheck qa clean \
         distclean wheel sdist dist check publish-test publish upgrade \
-        coverage coverage-html docs release bump demos demos-clean help
+        coverage coverage-html coverage-build docs release bump demos \
+        demos-clean help stubs stubs-check sanitize
 
 # Default target
 all: build
@@ -62,8 +63,17 @@ format:
 typecheck:
 	@uv run mypy src/cycdp/ tests/ --exclude '.venv'
 
-# Run a full quality assurance check
-qa: test lint typecheck format
+# Regenerate src/cycdp/_core.pyi from _core.pyx
+stubs:
+	@uv run python scripts/gen_stubs.py
+
+# Fail if the committed stubs are stale (CI)
+stubs-check:
+	@uv run python scripts/gen_stubs.py --check
+
+# Run a full quality assurance check.
+# format runs first so that lint and test see the formatted tree.
+qa: format lint stubs-check typecheck test
 
 # Build wheel
 wheel:
@@ -103,14 +113,34 @@ upgrade:
 	@uv lock --upgrade
 	@uv sync
 
-# Run tests with coverage
-coverage:
-	@uv run pytest tests/ -v --cov=src/cycdp --cov-report=term-missing
+# Run tests with coverage.
+#
+# This rebuilds the extension with Cython line tracing (CYCDP_COVERAGE=ON) so
+# that _core.pyx is actually measured. Without it, coverage silently reports on
+# the pure-Python files only and the total is meaningless. --no-cache is
+# required because uv keys its build cache on source content, not on the
+# environment, and would otherwise hand back a non-instrumented wheel.
+#
+# The instrumented build is ~2x slower and must never be published; `make
+# build` restores a normal one.
+coverage: coverage-build
+	@uv run pytest tests/ -v --cov --cov-report=term-missing
 
 # Generate HTML coverage report
-coverage-html:
-	@uv run pytest tests/ -v --cov=src/cycdp --cov-report=html
+coverage-html: coverage-build
+	@uv run pytest tests/ -v --cov --cov-report=html
 	@echo "Coverage report: htmlcov/index.html"
+
+# Build with ASan/UBSan and run the suite under them.
+# Restores the normal extension on exit; run `make build` if interrupted.
+sanitize:
+	@bash scripts/run_sanitizers.sh
+
+# Rebuild the extension with line tracing enabled (used by the coverage targets)
+coverage-build:
+	@echo "Building instrumented extension (CYCDP_COVERAGE=ON)..."
+	@SKBUILD_CMAKE_DEFINE=CYCDP_COVERAGE=ON \
+		uv sync --dev --reinstall-package cycdp --no-cache
 
 # Build documentation (requires sphinx in dev dependencies)
 docs:
@@ -125,6 +155,7 @@ bump:
 clean:
 	@rm -rf build/
 	@rm -rf dist/
+	@rm -f src/cycdp/_core.c
 	@rm -rf *.egg-info/
 	@rm -rf src/*.egg-info/
 	@rm -rf .pytest_cache/
@@ -151,7 +182,9 @@ help:
 	@echo "  lint         - Lint with ruff"
 	@echo "  format       - Format with ruff"
 	@echo "  typecheck    - Type check with mypy"
-	@echo "  qa           - Run full quality assurance (test, lint, typecheck, format)"
+	@echo "  stubs        - Regenerate _core.pyi from _core.pyx"
+	@echo "  stubs-check  - Fail if committed stubs are stale"
+	@echo "  qa           - Run full QA (format, lint, stubs-check, typecheck, test)"
 	@echo "  wheel        - Build wheel distribution"
 	@echo "  sdist        - Build source distribution"
 	@echo "  dist         - Build both wheel and sdist"
@@ -159,8 +192,9 @@ help:
 	@echo "  publish-test - Publish to TestPyPI"
 	@echo "  publish      - Publish to PyPI"
 	@echo "  upgrade      - Upgrade all dependencies"
-	@echo "  coverage     - Run tests with coverage"
-	@echo "  coverage-html- Generate HTML coverage report"
+	@echo "  coverage     - Rebuild with line tracing, run tests with coverage"
+	@echo "  coverage-html- Same, with an HTML report"
+	@echo "  sanitize     - Build with ASan/UBSan and run tests under them"
 	@echo "  docs         - Build documentation with Sphinx"
 	@echo "  release      - Bump version, tag, and prepare release"
 	@echo "  clean        - Remove build artifacts"

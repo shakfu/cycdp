@@ -175,6 +175,32 @@ cdp_lib_buffer* cdp_lib_reverb(cdp_lib_ctx* ctx,
     allpass_init(&allpasses_r[2], (size_t)((ALLPASS_TUNING_L3 + 23) * scale), 0.5f);
     allpass_init(&allpasses_r[3], (size_t)((ALLPASS_TUNING_L4 + 23) * scale), 0.5f);
 
+    /* comb_init/allpass_init cannot report failure, so verify every delay line
+       here: comb_process and allpass_process dereference buffer unconditionally.
+       comb_free/allpass_free tolerate a NULL buffer, so partial init frees
+       cleanly. */
+    int delay_lines_ok = 1;
+    for (int c = 0; c < 8; c++) {
+        if (combs_l[c].buffer == NULL || combs_r[c].buffer == NULL) delay_lines_ok = 0;
+    }
+    for (int a = 0; a < 4; a++) {
+        if (allpasses_l[a].buffer == NULL || allpasses_r[a].buffer == NULL) delay_lines_ok = 0;
+    }
+    if (!delay_lines_ok) {
+        for (int c = 0; c < 8; c++) {
+            comb_free(&combs_l[c]);
+            comb_free(&combs_r[c]);
+        }
+        for (int a = 0; a < 4; a++) {
+            allpass_free(&allpasses_l[a]);
+            allpass_free(&allpasses_r[a]);
+        }
+        cdp_lib_buffer_free(output);
+        cdp_lib_buffer_free(mono);
+        cdp_lib_set_error(ctx, "Failed to allocate reverb delay lines");
+        return NULL;
+    }
+
     /* Pre-delay buffer */
     float *predelay_buf = NULL;
     if (predelay_samples > 0) {

@@ -17,9 +17,7 @@ venv/
 __pycache__/
 *.pyc
 *.pyo
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
+.*_cache/
 
 # CMake
 CMakeCache.txt
@@ -41,3 +39,5 @@ compile_commands.json
 htmlcov/
 .coverage
 coverage.xml
+
+REVIEW.md

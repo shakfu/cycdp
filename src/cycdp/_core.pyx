@@ -486,21 +486,10 @@ def normalize_db(float[::1] samples not None, double target_db=0.0,
     return buf
 
 
-def phase_invert(float[::1] samples not None, int sample_rate=44100):
-    """Invert phase of audio samples.
-
-    Args:
-        samples: Input samples (any float32 buffer).
-        sample_rate: Sample rate in Hz.
-
-    Returns:
-        Buffer with phase-inverted samples.
-    """
-    cdef Context ctx = Context()
-    cdef Buffer buf = Buffer.from_memoryview(samples, 1, sample_rate)
-
-    apply_phase_invert(ctx, buf)
-    return buf
+# NOTE: phase_invert accepts both a raw float32 buffer and a Buffer, so it is
+# defined once in the phase-manipulation section below (it needs the cdp_lib
+# declarations that appear later in this file). It used to be defined twice --
+# here and again below -- which silently made this definition unreachable.
 
 
 def peak(float[::1] samples not None, int sample_rate=44100):
@@ -6272,7 +6261,7 @@ def constrict(Buffer buf not None, double constriction=50.0):
 # Phase - Phase Manipulation Effects
 # =============================================================================
 
-def phase_invert(Buffer buf not None):
+def phase_invert(samples not None, int sample_rate=44100):
     """
     Invert the phase of an audio signal.
 
@@ -6284,8 +6273,14 @@ def phase_invert(Buffer buf not None):
     - Creative sound design
     - Combining with the original to cancel common elements
 
+    Accepts either a Buffer or any float32 buffer (numpy array,
+    array.array('f'), memoryview), matching the other high-level
+    functions such as gain() and normalize().
+
     Args:
-        buf: Input Buffer (mono or stereo).
+        samples: Input Buffer, or any float32 buffer (mono or stereo).
+        sample_rate: Sample rate in Hz. Only used when samples is a raw
+            buffer; ignored when samples is a Buffer, which carries its own.
 
     Returns:
         New Buffer with inverted phase.
@@ -6293,10 +6288,23 @@ def phase_invert(Buffer buf not None):
     Raises:
         CDPError: If processing fails.
     """
-    cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
-    cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
+    cdef cdp_lib_ctx* ctx
+    cdef cdp_lib_buffer* input_buf
+    cdef cdp_lib_buffer* output_buf
+    cdef Buffer result
+    cdef Context py_ctx
 
-    cdef cdp_lib_buffer* output_buf = cdp_lib_phase_invert(ctx, input_buf)
+    if not isinstance(samples, Buffer):
+        # Raw float32 buffer: convert and invert in place via libcdp.
+        py_ctx = Context()
+        result = Buffer.from_memoryview(samples, 1, sample_rate)
+        apply_phase_invert(py_ctx, result)
+        return result
+
+    ctx = _get_cdp_lib_ctx()
+    input_buf = _buffer_to_cdp_lib(<Buffer>samples)
+
+    output_buf = cdp_lib_phase_invert(ctx, input_buf)
 
     cdp_lib_buffer_free(input_buf)
 
@@ -6304,7 +6312,7 @@ def phase_invert(Buffer buf not None):
         error_msg = cdp_lib_get_error(ctx)
         raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Phase invert failed")
 
-    cdef Buffer result = _cdp_lib_to_buffer(output_buf)
+    result = _cdp_lib_to_buffer(output_buf)
     cdp_lib_buffer_free(output_buf)
 
     return result
