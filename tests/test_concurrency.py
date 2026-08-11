@@ -44,7 +44,27 @@ def audio() -> cycdp.Buffer:
     return _sine()
 
 
+def _coverage_is_tracing() -> bool:
+    """True when the extension is built with Cython line tracing.
+
+    `make coverage` sets CYTHON_TRACE_NOGIL=1, so the trace hook fires inside
+    `with nogil:` blocks and re-acquires the GIL on every line. That serialises
+    exactly the work these timing tests measure -- parallel speedup drops to
+    ~1.2x purely from instrumentation. The GIL behaviour itself is unchanged,
+    so it is measured in the ordinary (non-instrumented) builds instead.
+    """
+    try:
+        import coverage
+    except ImportError:
+        return False
+    return coverage.Coverage.current() is not None
+
+
 class TestGilIsReleased:
+    @pytest.mark.skipif(
+        _coverage_is_tracing(),
+        reason="Cython line tracing re-acquires the GIL per line; see _coverage_is_tracing",
+    )
     def test_python_threads_keep_running_during_dsp(self):
         """A pure-Python thread must not be starved by a DSP call.
 
@@ -156,6 +176,10 @@ class TestConcurrentResultsMatchSequential:
 
 
 class TestParallelSpeedup:
+    @pytest.mark.skipif(
+        _coverage_is_tracing(),
+        reason="Cython line tracing re-acquires the GIL per line; see _coverage_is_tracing",
+    )
     def test_threads_give_real_speedup(self):
         """Wall-clock must improve with threads, not merely stay level.
 

@@ -94,6 +94,15 @@ class TestNoProcessGlobalState:
     session, and so a regression cannot be masked by test ordering.
     """
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason=(
+            "find_library('c') returns None on Windows, and msvcrt.dll is not "
+            "the CRT the extension links against (MSVC builds use the UCRT), "
+            "so the probe cannot observe the same rand() state. The static "
+            "guards below cover the regression on every platform."
+        ),
+    )
     @pytest.mark.parametrize(
         "name,expr",
         [
