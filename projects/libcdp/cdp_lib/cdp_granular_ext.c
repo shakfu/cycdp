@@ -353,7 +353,9 @@ cdp_lib_buffer* cdp_lib_grain_reorder(cdp_lib_ctx* ctx,
         overlap_add_grain(output->data, output_samples, grain_buf, g->length, write_pos);
 
         /* Advance position (subtract overlap) */
-        write_pos += g->length - splice_len;
+        /* Saturating: g->length can be <= splice_len, and these are size_t,
+         * so a plain subtraction underflows to a near-SIZE_MAX advance. */
+        write_pos += (g->length > splice_len) ? (g->length - splice_len) : 1;
         if (write_pos < splice_len) write_pos = splice_len;
     }
 
@@ -592,7 +594,9 @@ cdp_lib_buffer* cdp_lib_grain_reverse(cdp_lib_ctx* ctx,
         overlap_add_grain(output->data, output_samples, grain_buf, g->length, write_pos);
 
         /* Advance position */
-        write_pos += g->length - splice_len;
+        /* Saturating: g->length can be <= splice_len, and these are size_t,
+         * so a plain subtraction underflows to a near-SIZE_MAX advance. */
+        write_pos += (g->length > splice_len) ? (g->length - splice_len) : 1;
     }
 
     free(grain_buf);
@@ -796,9 +800,8 @@ cdp_lib_buffer* cdp_lib_grain_repitch(cdp_lib_ctx* ctx,
         return NULL;
     }
 
-    /* Process each grain */
-    size_t write_pos = 0;
-
+    /* Process each grain. Each is written back at its original position, so
+     * unlike the other granular passes there is no running write cursor. */
     for (size_t i = 0; i < grain_count; i++) {
         grain_info* g = &grains[i];
         double grain_time = (double)g->start / sample_rate;
@@ -841,8 +844,6 @@ cdp_lib_buffer* cdp_lib_grain_repitch(cdp_lib_ctx* ctx,
         }
 
         overlap_add_grain(output->data, output_samples, grain_buf, new_len, target_pos);
-
-        write_pos = target_pos + new_len;
     }
 
     free(grain_buf);
@@ -1077,7 +1078,9 @@ cdp_lib_buffer* cdp_lib_grain_omit(cdp_lib_ctx* ctx,
         /* Write to output */
         overlap_add_grain(output->data, output_samples, grain_buf, g->length, write_pos);
 
-        write_pos += g->length - splice_len;
+        /* Saturating: g->length can be <= splice_len, and these are size_t,
+         * so a plain subtraction underflows to a near-SIZE_MAX advance. */
+        write_pos += (g->length > splice_len) ? (g->length - splice_len) : 1;
     }
 
     free(grain_buf);
@@ -1187,7 +1190,10 @@ cdp_lib_buffer* cdp_lib_grain_duplicate(cdp_lib_ctx* ctx,
             /* Write to output */
             overlap_add_grain(output->data, output_samples, grain_buf, g->length, write_pos);
 
-            write_pos += g->length - splice_len;
+            /* Saturating: g->length can be <= splice_len, and these are
+             * size_t, so a plain subtraction underflows to a near-SIZE_MAX
+             * advance. */
+            write_pos += (g->length > splice_len) ? (g->length - splice_len) : 1;
         }
     }
 

@@ -13,6 +13,13 @@
 # preloaded into the interpreter before the instrumented .so is dlopen'd.
 #
 # Usage:  scripts/run_sanitizers.sh [extra pytest args...]
+#
+# Set CYCDP_SAN_COMMAND=fuzz to run scripts/fuzz_api.py under the sanitizer
+# instead of the test suite. That combination is the one that pays: the tests
+# only ever supply well-formed input, so ASan watches code paths that were
+# never in doubt, whereas the fuzzer drives the paths where an out-of-bounds
+# read would actually occur. Linux only -- see the DYLD note below, the fuzzer
+# runs each call in a subprocess and macOS strips the runtime from children.
 
 set -euo pipefail
 
@@ -130,5 +137,17 @@ case "$(uname -s)" in
 esac
 
 echo "==> Sanitizer runtime: $RUNTIME"
-echo "==> Running tests"
-"$PYTHON" -m pytest tests/ -q -p no:cacheprovider "${EXTRA_ARGS[@]}" "$@"
+
+if [ "${CYCDP_SAN_COMMAND:-pytest}" = "fuzz" ]; then
+    if [ "$(uname -s)" != "Linux" ]; then
+        echo "error: CYCDP_SAN_COMMAND=fuzz needs LD_PRELOAD inheritance (Linux only)" >&2
+        exit 1
+    fi
+    echo "==> Fuzzing the API under the sanitizer"
+    # A longer per-function timeout than the bare run: instrumented code is
+    # several times slower, and a timeout here would read as a hang.
+    "$PYTHON" scripts/fuzz_api.py --timeout 180 --jobs 2 "$@"
+else
+    echo "==> Running tests"
+    "$PYTHON" -m pytest tests/ -q -p no:cacheprovider "${EXTRA_ARGS[@]}" "$@"
+fi

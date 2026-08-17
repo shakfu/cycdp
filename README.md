@@ -6,11 +6,19 @@ Python bindings for the [CDP8](https://github.com/ComposersDesktop/CDP8) (Compos
 
 The [Composers Desktop Project](https://www.composersdesktop.com) (CDP) is a venerable suite of over 500 sound transformation programs developed since the late 1980s by Trevor Wishart, Richard Orton, and others. It occupies a unique niche in audio processing: where most tools focus on mixing, mastering, or standard effects, CDP specializes in deep spectral manipulation, granular synthesis, pitch-synchronous operations, waveset distortion, and other techniques rooted in the electroacoustic and computer music traditions.
 
-Historically, CDP programs are invoked as standalone command-line executables that read and write sound files, which makes integration into modern workflows cumbersome. **cycdp** solves this in two ways. First, a C library (`libcdp`) reimplements a curated subset of CDP's algorithms to operate directly on memory buffers. Second, a shim layer intercepts the file I/O calls inside original CDP algorithm code (the `sfsys` open/read/write/seek functions) and redirects them to memory buffers transparently, so those algorithms can run in-process without touching the filesystem. Both paths are exposed to Python via Cython bindings, giving you native-speed audio processing with a Pythonic API, zero-copy buffer interoperability, and no subprocess overhead.
+Historically, CDP programs are invoked as standalone command-line executables that read and write sound files, which makes integration into modern workflows cumbersome. **cycdp** works differently: a C library reimplements a curated subset of CDP's algorithms to operate directly on memory buffers, and Cython bindings expose it to Python. The result is native-speed audio processing with a Pythonic API and no subprocess overhead.
+
+### What "reimplements" means
+
+The algorithms here are **independent ports**, not the original CDP executables wrapped or linked. Each was written against the corresponding program in the CDP8 source tree -- `dev/morph/morph.c` for the morph family, `dev/grain/grain1.c` for the granular operations, and so on -- reproducing the technique while dropping the file I/O and command-line parsing that the originals are built around. `projects/libcdp/DEV_GUIDE.md` describes that process.
+
+The practical consequence: cycdp gives you CDP's *techniques*, and output that is close to but not bit-identical with the original programs. Where fidelity to a specific CDP release matters, compare against the executable rather than assuming equivalence. The only upstream CDP source compiled into the extension is the FFT (`dev/pv/mxfft.c`).
+
+The exception is the phase vocoder underneath the spectral operations, which follows CDP's `dev/pv/pvoc.c` closely rather than loosely -- the rotated frame folding, the deviation-from-bin-centre phase accumulation, and the sign conventions are all CDP's. That is deliberate: a looser reading of the algorithm had three defects that cancelled on any analyse-then-resynthesise path and so were invisible until an operation tried to *read* a frequency or move energy between bins.
 
 ### Design principles
 
-- **Zero-copy interop.** Cython memoryviews and the buffer protocol mean data passes between Python and C without copying.
+- **Zero-copy output.** A result `Buffer` exposes its samples through the Python buffer protocol, so reading it into numpy or `array.array` copies nothing. Input is copied once into library-owned memory on the way in -- a few microseconds for a typical buffer, against milliseconds for the processing itself.
 
 - **No numpy dependency.** Operates on any object supporting the Python buffer protocol (`array.array`, `memoryview`, numpy arrays, etc.). Numpy is optional, not required.
 
@@ -67,14 +75,9 @@ with cf.ThreadPoolExecutor(max_workers=4) as pool:
                             [1.5, 2.0, 2.5, 3.0]))
 ```
 
-Each thread gets its own library context, so seeded operations stay
-reproducible under contention and error messages do not interleave. Buffers are
-owned by the caller; passing the same input Buffer to concurrent operations is
-safe because each call copies it before processing.
+Each thread gets its own library context, so seeded operations stay reproducible under contention and error messages do not interleave. Buffers are owned by the caller; passing the same input Buffer to concurrent operations is safe because each call copies it before processing.
 
-Verified with ThreadSanitizer over a mixed multi-threaded workload. On a
-four-core machine, eight `time_stretch` calls run about 3.4x faster across four
-threads than sequentially.
+Verified with ThreadSanitizer over a mixed multi-threaded workload. On a four-core machine, eight `time_stretch` calls run about 3.4x faster across four threads than sequentially.
 
 ## Installation
 
@@ -537,29 +540,40 @@ These work with explicit Context and Buffer objects:
 ```text
 Python                  cycdp (high-level API)
                             |
-Cython                  _core.pyx  (zero-copy buffer protocol)
+Cython                  _core.pyx
+                        - parameter validation
+
+                        - Buffer <-> C conversion, error translation
+
+                        - releases the GIL around every processing call
                             |
               +-------------+-------------+
               |                           |
 C         libcdp                      cdp_lib
-      (reimplemented             (shim-wrapped CDP8
-       algorithms)                  algorithms)
-          |                           |
-          +------ cdp_shim / cdp_io_redirect ------+
-                  (intercept sfsys I/O,
-                   redirect to memory buffers)
+      (buffers, gain,             (spectral, granular, morph,
+       channels, mixing,           distortion, PSOW, FOFEX, ...
+       spatial, WAV I/O)           -- algorithms ported from CDP8)
+              |                           |
+              +-------------+-------------+
                             |
-                        CDP8 sources
-                     (FFT, spectral core)
+                        mxfft.c
+                 (the one upstream CDP8 source
+                  compiled in: FFT routines)
 ```
 
-**libcdp** (`projects/libcdp/src/`) -- Core C library that reimplements CDP operations (buffer management, gain, channel ops, mixing, spatial, file I/O, utilities) to work directly on memory buffers.
+**libcdp** (`projects/libcdp/src/`) -- Core C library: buffer management, gain, channel operations, mixing, spatial processing, WAV read/write, and shared utilities. All of it operates on memory buffers.
 
-**cdp_lib** (`projects/libcdp/cdp_lib/`) -- Wrapper modules that call into original CDP8 algorithm code. Each category (spectral, granular, morph, distortion, etc.) has its own `.c`/`.h` pair. These rely on the shim layer to function without file I/O.
+**cdp_lib** (`projects/libcdp/cdp_lib/`) -- The processing algorithms, one `.c`/`.h` pair per category (spectral, granular, morph, distortion, playback, PSOW, FOFEX, experimental, ...). Each is an independent port of the corresponding CDP program, written against the upstream source but structured around buffers rather than files. See `projects/libcdp/DEV_GUIDE.md`.
 
-**cdp_shim / cdp_io_redirect** (`projects/libcdp/cdp_lib/cdp_shim.*`, `cdp_io_redirect.*`) -- Intercept CDP's `sfsys` file operations (`sndopenEx`, `fgetfbufEx`, `fputfbufEx`, `sndseekEx`, etc.) and redirect them to memory buffers. This allows original CDP algorithms to run in-process without touching the filesystem, handling single and multi-input scenarios (e.g. morph, cross-synthesis) via slot-based buffer registration.
+**CDP8 sources** (`projects/cpd8/`) -- The upstream CDP8 tree, vendored as the reference the ports are written against. `dev/pv/mxfft.c` is the only file compiled into the extension, with `dev/newinclude` and `dev/include` on the include path for the headers it needs. Everything else in the tree is source material, not a build input.
 
-**CDP8 sources** (`projects/cpd8/dev/`) -- Upstream CDP8 code (FFT routines, spectral processing core, header definitions) compiled in and accessed through the shim layer.
+### An approach that was tried and dropped
+
+`projects/libcdp/cdp_lib/cdp_shim.*` and `cdp_io_redirect.*` implement a fake `sfsys`: a slot table of in-memory "files" plus `#define`s that would redirect CDP's soundfile calls (`sndopenEx`, `fgetfbufEx`, `fputfbufEx`, `sndseekEx`) to it. Had it worked, an unmodified CDP program source could have been compiled and called in-process, making all ~500 of them available by compiling rather than rewriting.
+
+**It is not part of the build.** Intercepting I/O turned out to be necessary but nowhere near sufficient: CDP algorithms are `main()` programs with command-line parsing and extensive global state, so porting each core loop proved cheaper. The files remain in the tree as the record of the approach, with the reasoning and the obstacles in the header comment of `cdp_shim.h`. Two tests keep the decision honest -- `test_shim_is_not_compiled` fails if either file returns to `CDP_LIB_SOURCES`, and `test_shim_remains_unreachable` fails if anything starts calling into them.
+
+Reviving it would mean solving the hosting problem first. Its I/O slot state is process-global by design, faithfully mirroring the CDP programs it was meant to host, and the processing paths release the GIL -- so the right ownership model follows from whatever solves the hosting problem rather than preceding it.
 
 ### Directory layout
 
@@ -581,13 +595,13 @@ cycdp/
       src/                      # Reimplemented core (buffer, gain, channel, ...)
       cdp_lib/
         cdp_lib.h/.c            # Main library entry point
-        cdp_shim.h/.c           # Shim: sfsys replacement functions
-        cdp_io_redirect.h/.c    # I/O redirect: slot-based buffer routing
-        cdp_spectral.h/.c       # Spectral processing wrappers
-        cdp_granular.h/.c       # Granular synthesis wrappers
-        cdp_morph.h/.c          # Morphing wrappers
-        cdp_distort.h/.c        # Distortion wrappers
-        cdp_*.h/.c              # Other category wrappers
+        cdp_spectral.h/.c       # Phase vocoder + spectral operations
+        cdp_granular.h/.c       # Granular synthesis
+        cdp_morph.h/.c          # Morphing
+        cdp_distort.h/.c        # Waveset distortion
+        cdp_*.h/.c              # Other categories
+        cdp_shim.h/.c           # NOT BUILT: abandoned sfsys shim, kept
+        cdp_io_redirect.h/.c    #   as a record -- see cdp_shim.h
     cpd8/dev/                   # Upstream CDP8 sources (FFT, includes)
   tests/                        # Python tests
   demos/                        # Example scripts

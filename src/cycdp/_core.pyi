@@ -787,7 +787,7 @@ def morph_bridge_native(
     interp_end: float = 1.0,
     fft_size: int = 1024,
 ) -> Buffer:
-    """Spectral bridge using original CDP algorithm (CDP: SPECBRIDGE)."""
+    """Spectral bridge, ported from CDP's specbridge."""
     ...
 
 def morph_glide(
@@ -805,7 +805,7 @@ def morph_glide_native(
     duration: float = 1.0,
     fft_size: int = 1024,
 ) -> Buffer:
-    """Spectral glide using original CDP algorithm (CDP: SPECGLIDE)."""
+    """Spectral glide, ported from CDP's specglide."""
     ...
 
 def morph_native(
@@ -821,7 +821,7 @@ def morph_native(
     stagger: float = 0.0,
     fft_size: int = 1024,
 ) -> Buffer:
-    """Full spectral morph using original CDP algorithm (CDP: SPECMORPH)."""
+    """Full spectral morph, ported from CDP's specmorph."""
     ...
 
 def narrow(buf: Buffer, width: float = 1.0) -> Buffer:
@@ -922,6 +922,10 @@ def quirk(
 
 def read_file(path: str) -> Buffer:
     """Read an audio file into a Buffer."""
+    ...
+
+def release_thread_context() -> None:
+    """Free this thread's processing context now."""
     ...
 
 def retime(

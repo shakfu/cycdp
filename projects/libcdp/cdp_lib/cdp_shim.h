@@ -1,8 +1,42 @@
 /*
  * CDP Shim Layer - Memory buffer I/O for CDP processing functions.
  *
- * This replaces file-based I/O with memory buffer operations,
- * allowing CDP algorithms to be used as library functions.
+ * NOT BUILT. Kept as the record of an approach that was tried and abandoned.
+ * Neither this file nor cdp_io_redirect.c is in CDP_LIB_SOURCES, and
+ * tests/test_concurrency.py::test_shim_remains_unreachable fails if anything
+ * starts calling into them.
+ *
+ * What it was for
+ * ---------------
+ * CDP's programs are built around sfsys, its soundfile library: every
+ * algorithm reads with fgetfbufEx, seeks with sndseekEx, writes with
+ * fputfbufEx. The idea was to satisfy those calls from memory instead of the
+ * filesystem, so that an unmodified CDP source file could be compiled with
+ * -DCDP_LIBRARY_MODE (see cdp_sfsys_shim.h, which #defines the sfsys entry
+ * points to wrappers over the slot table in cdp_io_redirect.c) and called
+ * in-process. That would have made all ~500 CDP programs available by
+ * compiling them rather than rewriting them, with output identical to the
+ * originals.
+ *
+ * Why it was abandoned
+ * --------------------
+ * Intercepting I/O is necessary but nowhere near sufficient. CDP algorithms
+ * are main() programs: command-line parsing, extensive global state, and the
+ * dataptr/datalist parameter machinery (the bare forward declaration of
+ * dataptr below is a fossil of that attempt). Porting each algorithm's core
+ * loop proved cheaper, so every operation in cdp_lib/ is an independent
+ * reimplementation -- see DEV_GUIDE.md, whose step 2 says to ignore the file
+ * I/O and command-line parsing entirely.
+ *
+ * If this is ever revived
+ * -----------------------
+ * The design is deliberately process-global because CDP itself is (see
+ * g_cdp_shim below). That is now a blocker rather than a faithful choice: the
+ * Python bindings release the GIL around every processing call, so a single
+ * global slot table would be a data race the moment two threads used it.
+ * Making the state thread-local is necessary but, again, not sufficient --
+ * the hosting problem above has to be solved first, and the right ownership
+ * model will follow from whatever solves it.
  */
 
 #ifndef CDP_SHIM_H

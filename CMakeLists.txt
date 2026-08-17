@@ -1,10 +1,63 @@
 cmake_minimum_required(VERSION 3.15...3.31)
+
+# scikit-build-core sets these; a direct `cmake -S . -B ...` does not, and the
+# sanitizer and -Werror builds configure that way. Falling back to pyproject.toml
+# keeps one source for the version: without this the direct builds produced an
+# empty PROJECT_VERSION, and cdp_version() reported an empty string.
+if(NOT DEFINED SKBUILD_PROJECT_NAME OR SKBUILD_PROJECT_NAME STREQUAL "")
+    set(SKBUILD_PROJECT_NAME "cycdp")
+endif()
+if(NOT DEFINED SKBUILD_PROJECT_VERSION OR SKBUILD_PROJECT_VERSION STREQUAL "")
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/pyproject.toml" _pyproject)
+    string(REGEX MATCH "\nversion = \"([^\"]+)\"" _ "${_pyproject}")
+    if(NOT CMAKE_MATCH_1)
+        message(FATAL_ERROR "cannot read project version from pyproject.toml")
+    endif()
+    set(SKBUILD_PROJECT_VERSION "${CMAKE_MATCH_1}")
+endif()
+
 project(${SKBUILD_PROJECT_NAME} VERSION ${SKBUILD_PROJECT_VERSION} LANGUAGES C)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# The static libraries are linked into one Python extension and nothing else
+# needs their symbols, so keep them out of the module's dynamic symbol table.
+# Without this the wheel exported `errstr`, `fft_`, `fftmx` and `reals_` --
+# generic names from the vendored FFT that also exist in FFTPACK-derived
+# libraries. CPython uses RTLD_LOCAL so a collision needs another extension
+# loaded with RTLD_GLOBAL, but the fix costs nothing and removes the question.
+# _PyInit__core keeps its visibility: Cython marks it explicitly.
+set(CMAKE_C_VISIBILITY_PRESET hidden)
+set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
+
 find_package(Python REQUIRED COMPONENTS Interpreter Development.Module)
+
+# =============================================================================
+# Warnings
+# =============================================================================
+# These apply to every target below, not just the extension.
+#
+# For a long time only `_core` was built with -Wall -Wextra, leaving the 23,000
+# lines of C in `cdp` and `cdp_lib` compiled at the compiler's defaults -- and
+# that is where the crashes live. Turning them on cost nine fixes, all unused
+# variables, one of which (`write_pos` in cdp_granular_ext.c) marked a genuine
+# dead computation.
+#
+# Not -Werror by default: a new compiler release introducing a warning should
+# not break every user building from an sdist. CYCDP_WERROR=ON turns them into
+# errors and is what CI uses.
+#
+# It applies to `cdp` and `cdp_lib` only, never to `_core`: that target is
+# built from Cython-generated C, which emits sign-compare warnings we have no
+# way to fix and no business failing on.
+if(MSVC)
+    add_compile_options(/W4)
+else()
+    add_compile_options(-Wall -Wextra)
+endif()
+
+option(CYCDP_WERROR "Treat warnings in the hand-written C as errors" OFF)
 
 # =============================================================================
 # Sanitizers
@@ -73,6 +126,13 @@ set(LIBCDP_SOURCES
 # Build libcdp as a static library
 add_library(cdp STATIC ${LIBCDP_SOURCES})
 target_include_directories(cdp PUBLIC ${LIBCDP_DIR}/include)
+# cdp_version() reports the project version rather than a separate literal that
+# has to be remembered. They had already diverged (0.1.0 against 0.2.0).
+target_compile_definitions(cdp PRIVATE
+    CDP_VERSION_STRING="${PROJECT_VERSION}")
+if(CYCDP_WERROR AND NOT MSVC)
+    target_compile_options(cdp PRIVATE -Werror)
+endif()
 if(UNIX)
     target_link_libraries(cdp PUBLIC m)
 endif()
@@ -81,11 +141,25 @@ endif()
 # Build CDP processing library (native spectral operations)
 # =============================================================================
 
-# CDP library wrapper sources
+# CDP library wrapper sources.
+#
+# cdp_shim.c and cdp_io_redirect.c are deliberately absent. They implement an
+# abandoned strategy: a fake sfsys that would let unmodified CDP program
+# sources run against memory buffers, by #define-ing fgetfbufEx and friends to
+# wrappers over a slot table of in-memory "files". Intercepting I/O turned out
+# to be necessary but nowhere near sufficient -- CDP algorithms are main()
+# programs with command-line parsing and extensive global state -- so every
+# operation here is an independent port instead (see DEV_GUIDE.md), and
+# nothing ever called the shim.
+#
+# They were still compiled and linked into every wheel: ~750 lines of dead
+# object code carrying process-global mutable state, one call away from
+# undoing the per-thread context work, since the processing paths release the
+# GIL. The files remain in the tree as the record of the approach; see the
+# header comment in cdp_shim.h.
 set(CDP_LIB_SOURCES
     ${LIBCDP_DIR}/cdp_lib/cdp_lib.c
     ${LIBCDP_DIR}/cdp_lib/cdp_spectral.c
-    ${LIBCDP_DIR}/cdp_lib/cdp_io_redirect.c
     ${LIBCDP_DIR}/cdp_lib/cdp_envelope.c
     ${LIBCDP_DIR}/cdp_lib/cdp_distort.c
     ${LIBCDP_DIR}/cdp_lib/cdp_reverb.c
@@ -98,7 +172,6 @@ set(CDP_LIB_SOURCES
     ${LIBCDP_DIR}/cdp_lib/cdp_dynamics.c
     ${LIBCDP_DIR}/cdp_lib/cdp_morph.c
     ${LIBCDP_DIR}/cdp_lib/cdp_morph_native.c
-    ${LIBCDP_DIR}/cdp_lib/cdp_shim.c
     ${LIBCDP_DIR}/cdp_lib/cdp_experimental.c
     ${LIBCDP_DIR}/cdp_lib/cdp_playback.c
     ${LIBCDP_DIR}/cdp_lib/cdp_synth.c
@@ -131,6 +204,17 @@ elseif(UNIX)
 endif()
 if(UNIX)
     target_link_libraries(cdp_lib PUBLIC m)
+endif()
+# cdp_lib.c registers a pthread key destructor so each thread's context is
+# freed when the thread exits. glibc 2.34+ folds libpthread into libc, but
+# older glibc and the BSDs still need the explicit link.
+find_package(Threads REQUIRED)
+target_link_libraries(cdp_lib PUBLIC Threads::Threads)
+if(CYCDP_WERROR AND NOT MSVC)
+    # mxfft.c is vendored upstream CDP code; hold our own sources to the bar,
+    # not someone else's.
+    set_source_files_properties(${CDP_LIB_SOURCES} PROPERTIES
+        COMPILE_OPTIONS "-Werror")
 endif()
 
 # =============================================================================
@@ -196,11 +280,5 @@ target_include_directories(_core PRIVATE
     ${LIBCDP_DIR}/include
     ${LIBCDP_DIR}/cdp_lib
 )
-
-if(MSVC)
-    target_compile_options(_core PRIVATE /W4)
-else()
-    target_compile_options(_core PRIVATE -Wall -Wextra)
-endif()
 
 install(TARGETS _core DESTINATION cycdp)

@@ -675,7 +675,11 @@ cdp_lib_buffer* cdp_lib_grain_extend(cdp_lib_ctx* ctx,
             }
         }
 
-        write_pos += grain_len - splice_len;  /* Overlap splices */
+        /* Overlap splices. The advance must be strictly positive: grain_len
+         * and splice_len are both derived from the sample rate and are equal
+         * whenever grainsize_ms is the default 15 ms, which made this loop
+         * spin forever. A shorter grain than splice would underflow instead. */
+        write_pos += (grain_len > splice_len) ? (grain_len - splice_len) : 1;
     }
 
     /* Copy audio after segment */

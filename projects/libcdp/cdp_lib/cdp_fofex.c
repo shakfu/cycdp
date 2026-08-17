@@ -60,51 +60,6 @@ static int find_zero_crossings(const float* data, size_t length,
 }
 
 /*
- * Estimate pitch period at a position using autocorrelation.
- */
-static size_t estimate_pitch_period(const float* data, size_t pos, size_t length,
-                                     int sample_rate) {
-    size_t min_period = sample_rate / (int)MAX_PITCH_HZ;
-    size_t max_period = sample_rate / (int)MIN_PITCH_HZ;
-
-    if (pos + max_period * 2 > length) {
-        max_period = (length - pos) / 2;
-    }
-
-    if (max_period < min_period) {
-        return min_period;
-    }
-
-    /* Find best correlation in range */
-    double best_corr = -1.0;
-    size_t best_period = min_period;
-
-    for (size_t period = min_period; period <= max_period; period++) {
-        double sum = 0.0;
-        double sum_sq1 = 0.0;
-        double sum_sq2 = 0.0;
-
-        for (size_t i = 0; i < period && pos + i < length && pos + period + i < length; i++) {
-            float v1 = data[pos + i];
-            float v2 = data[pos + period + i];
-            sum += v1 * v2;
-            sum_sq1 += v1 * v1;
-            sum_sq2 += v2 * v2;
-        }
-
-        double denom = sqrt(sum_sq1 * sum_sq2);
-        double corr = (denom > 0.0001) ? (sum / denom) : 0.0;
-
-        if (corr > best_corr) {
-            best_corr = corr;
-            best_period = period;
-        }
-    }
-
-    return best_period;
-}
-
-/*
  * Apply raised cosine window to FOF edges.
  */
 static void apply_fof_window(float* data, size_t length, size_t edge_samples) {

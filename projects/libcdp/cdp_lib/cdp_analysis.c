@@ -319,7 +319,14 @@ cdp_partial_data* cdp_lib_get_partials(cdp_lib_ctx* ctx, const cdp_lib_buffer* i
     if (hop_size <= 0) hop_size = 512;
 
     float min_amp = (float)pow(10.0, min_amp_db / 20.0);
-    int overlap = fft_size / hop_size;
+    /* cdp_spectral_analyze takes an overlap *exponent* -- it computes
+     * hop = fft_size >> overlap -- not the ratio. Passing the ratio meant a
+     * caller asking for a 512-sample hop with a 2048 FFT got overlap 4 and a
+     * hop of 128: a quarter of what it asked for, and inconsistent with the
+     * frame_time reported back to the caller, which was derived from the
+     * requested hop. */
+    int overlap = 0;
+    for (int h = fft_size; h > hop_size && overlap < 4; h >>= 1) overlap++;
 
     cdp_spectral_data *spectral = cdp_spectral_analyze(input->data, input->length,
                                                         input->channels, input->sample_rate,

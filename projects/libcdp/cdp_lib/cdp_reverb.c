@@ -26,7 +26,17 @@ typedef struct {
     float feedback;
 } allpass_filter;
 
+/* The delay-line length scales with the input sample rate (see `scale` in
+ * cdp_lib_reverb), so a low enough rate rounds every tuning constant down to
+ * zero frames. calloc(0, n) returns a non-NULL pointer to a zero-byte
+ * allocation on both glibc and macOS, and comb_process then reads buffer[0]
+ * from it -- a heap overflow that happens to be invisible without ASan. One
+ * frame is the smallest delay line that is actually a delay line.
+ *
+ * Allocation failure itself is checked by the caller, which verifies all
+ * twenty-four delay lines in one pass after initialising them. */
 static void comb_init(comb_filter *c, size_t size, float feedback, float damp) {
+    if (size == 0) size = 1;
     c->buffer = (float*)calloc(size, sizeof(float));
     c->size = size;
     c->read_pos = 0;
@@ -55,6 +65,7 @@ static float comb_process(comb_filter *c, float input) {
 }
 
 static void allpass_init(allpass_filter *a, size_t size, float feedback) {
+    if (size == 0) size = 1;  /* see comb_init */
     a->buffer = (float*)calloc(size, sizeof(float));
     a->size = size;
     a->index = 0;

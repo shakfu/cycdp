@@ -19,8 +19,18 @@ struct cdp_context {
     char error_message[CDP_ERROR_MSG_SIZE];
 };
 
-/* Version string */
-static const char version_string[] = "0.1.0";
+/* Version string.
+ *
+ * Defined by CMake from the project version in pyproject.toml, which is the
+ * single source. It used to be a literal here and had drifted: the C library
+ * reported 0.1.0 while the package was 0.2.0, and cycdp.version() -- the one
+ * a user calls to find out what they have -- returned the stale number.
+ * tests/test_pycdp.py asserts the two agree. */
+#ifndef CDP_VERSION_STRING
+#define CDP_VERSION_STRING "0.0.0+unknown"
+#endif
+
+static const char version_string[] = CDP_VERSION_STRING;
 
 const char* cdp_version(void)
 {

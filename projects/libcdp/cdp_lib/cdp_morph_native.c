@@ -1,9 +1,11 @@
 /*
- * CDP Morph Native Wrapper - Implementation
+ * CDP Morph - Implementation
  *
- * Implements the original CDP morph algorithms (specglide, specbridge, specmorph)
- * using our spectral analysis/synthesis infrastructure. The algorithms are
- * ported from dev/morph/morph.c by Trevor Wishart.
+ * Ports of CDP's specglide, specbridge and specmorph, from dev/morph/morph.c
+ * by Trevor Wishart, onto this library's own spectral analysis and synthesis.
+ * These are ports, not the original code: the `_native` suffix on the exported
+ * names distinguishes them from the simpler generic morph in cdp_morph.c, and
+ * does not mean upstream code is running.
  *
  * The approach:
  * 1. Convert audio to spectral data using cdp_spectral_analyze
@@ -14,7 +16,6 @@
 #include "cdp_morph_native.h"
 #include "cdp_lib_internal.h"
 #include "cdp_spectral.h"
-#include "cdp_shim.h"
 
 #include <stdlib.h>
 #include <string.h>

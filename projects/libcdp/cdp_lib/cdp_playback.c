@@ -310,7 +310,21 @@ cdp_lib_buffer* cdp_lib_stutter(cdp_lib_ctx* ctx,
         return NULL;
     }
 
+    /* If no segment can ever satisfy the splice length, the retry path below
+     * would spin forever without producing output. Say so instead. */
+    if (seg_frames < splice_frames * 2) {
+        free(seg_buf);
+        free(out_data);
+        cdp_lib_set_error(ctx,
+            "stutter: segment_ms is too short for the splice length");
+        return NULL;
+    }
+
     size_t out_pos = 0;
+    /* Both `continue` paths below skip an iteration without advancing out_pos,
+     * so the loop needs a bound of its own. */
+    size_t retries = 0;
+    const size_t max_retries = out_frames + 16;
 
     while (out_pos < out_frames) {
         /* Select random segment */
@@ -319,11 +333,19 @@ cdp_lib_buffer* cdp_lib_stutter(cdp_lib_ctx* ctx,
         size_t seg_start = seg_idx * seg_frames;
         size_t seg_len = seg_frames;
 
-        /* Don't exceed input bounds */
+        /* Don't exceed input bounds. seg_start is clamped first because these
+         * are size_t: subtracting past the end underflows to a huge length. */
+        if (seg_start >= input_frames) {
+            if (++retries > max_retries) break;
+            continue;
+        }
         if (seg_start + seg_len > input_frames) {
             seg_len = input_frames - seg_start;
         }
-        if (seg_len < splice_frames * 2) continue;
+        if (seg_len < splice_frames * 2) {
+            if (++retries > max_retries) break;
+            continue;
+        }
 
         /* Random transposition */
         double transpose = 0;
@@ -345,7 +367,10 @@ cdp_lib_buffer* cdp_lib_stutter(cdp_lib_ctx* ctx,
             src_pos += pitch_ratio;
         }
 
-        if (written < splice_frames * 2) continue;
+        if (written < splice_frames * 2) {
+            if (++retries > max_retries) break;
+            continue;
+        }
 
         /* Apply splice envelopes */
         apply_splice_in(seg_buf, 0, splice_frames, channels);
@@ -601,8 +626,25 @@ cdp_lib_buffer* cdp_lib_drunk(cdp_lib_ctx* ctx,
         return NULL;
     }
 
+    /* A step longer than the input can never yield a usable segment, and the
+     * walk below would spin forever retrying. Reject it up front rather than
+     * looping. */
+    if (step_frames >= input_frames || splice_frames * 2 >= input_frames) {
+        free(seg_buf);
+        free(out_data);
+        cdp_lib_set_error(ctx,
+            "drunk: step_ms and splice_ms must be shorter than the input");
+        return NULL;
+    }
+
     size_t out_pos = 0;
     size_t current_pos = locus_frame; /* Start at locus */
+    /* The retry path below makes no output progress, so it needs its own
+     * bound: without one, a walk that can never place a segment loops
+     * forever. One retry per output frame is far more than a healthy run
+     * needs and still terminates. */
+    size_t retries = 0;
+    const size_t max_retries = out_frames + 16;
 
     while (out_pos < out_frames) {
         /* Calculate step size with randomization */
@@ -615,13 +657,23 @@ cdp_lib_buffer* cdp_lib_drunk(cdp_lib_ctx* ctx,
         size_t seg_start = current_pos;
         size_t seg_len = this_step;
 
-        /* Ensure we stay within input bounds */
+        /* Ensure we stay within input bounds.
+         *
+         * seg_start is clamped first: these are size_t, so evaluating
+         * `input_frames - seg_start` with seg_start past the end underflows to
+         * a near-SIZE_MAX length and the copy below then reads far outside the
+         * input. That was a reachable segfault (drunk with a large step_ms). */
+        if (seg_start >= input_frames) {
+            seg_start = 0;
+            current_pos = 0;
+        }
         if (seg_start + seg_len > input_frames) {
             seg_len = input_frames - seg_start;
         }
         if (seg_len < splice_frames * 2) {
             /* Can't make a valid segment, jump to a new position */
             current_pos = locus_frame;
+            if (++retries > max_retries) break;
             continue;
         }
 
@@ -675,11 +727,16 @@ cdp_lib_buffer* cdp_lib_drunk(cdp_lib_ctx* ctx,
             new_pos = locus_frame + ambitus_frames - (new_pos - (int64_t)(locus_frame + ambitus_frames));
         }
 
-        /* Final bounds check */
-        if (new_pos < 0) new_pos = 0;
+        /* Final bounds check.
+         *
+         * The upper clamp is applied before the lower one, not after: when
+         * step_frames exceeds input_frames it evaluates to a negative value,
+         * and the earlier ordering assigned that straight into a size_t. */
         if (new_pos >= (int64_t)input_frames - (int64_t)step_frames) {
-            new_pos = input_frames - step_frames - 1;
+            new_pos = (int64_t)input_frames - (int64_t)step_frames - 1;
         }
+        if (new_pos < 0) new_pos = 0;
+        if (new_pos >= (int64_t)input_frames) new_pos = (int64_t)input_frames - 1;
 
         current_pos = (size_t)new_pos;
     }
@@ -730,7 +787,6 @@ cdp_lib_buffer* cdp_lib_loop(cdp_lib_ctx* ctx,
     int channels = input->channels;
     int sample_rate = input->sample_rate;
     size_t input_frames = get_frames(input);
-    double input_dur = (double)input_frames / sample_rate;
 
     /* Initialize random */
     cdp_lib_seed(ctx, seed);

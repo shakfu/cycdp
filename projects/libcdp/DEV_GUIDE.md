@@ -7,7 +7,9 @@ This guide explains how to convert CDP algorithms into native library functions 
 The goal is to implement CDP audio processing algorithms as native C functions that:
 
 - Operate directly on memory buffers (no file I/O)
+
 - Have zero subprocess overhead
+
 - Are accessible from Python via Cython bindings
 
 ## Architecture
@@ -28,14 +30,14 @@ The goal is to implement CDP audio processing algorithms as native C functions t
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                    C Library (cdp_lib)                      │
-│    cdp_lib.c, cdp_spectral.c, cdp_envelope.c, etc.         │
+│    cdp_lib.c, cdp_spectral.c, cdp_envelope.c, etc.          │
 │              (Native algorithm implementations)             │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                    CDP Infrastructure                       │
-│              mxfft.c (FFT), cdp_shim.c (compat)            │
+│              mxfft.c (FFT), cdp_shim.c (compat)             │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -46,8 +48,11 @@ The goal is to implement CDP audio processing algorithms as native C functions t
 Before implementing, understand what the CDP algorithm does:
 
 1. Find the original CDP source (usually in `dev/` directory)
+
 2. Identify the core algorithm (ignore file I/O, command-line parsing)
+
 3. Determine input/output requirements
+
 4. Note any parameters and their valid ranges
 
 ### Step 2: Add C Declaration (cdp_lib.h)
@@ -58,12 +63,18 @@ Add the function declaration to `cdp_lib/cdp_lib.h`:
 /*
  * Brief description of what the function does.
  *
+
  * Args:
+
  *   ctx: Library context
+
  *   input: Input audio buffer
+
  *   param1: Description of parameter
+
  *   param2: Description of parameter
  *
+
  * Returns: New buffer with processed audio, or NULL on error.
  */
 cdp_lib_buffer* cdp_lib_my_effect(cdp_lib_ctx* ctx,
@@ -75,8 +86,11 @@ cdp_lib_buffer* cdp_lib_my_effect(cdp_lib_ctx* ctx,
 **Conventions:**
 
 - All functions take `cdp_lib_ctx*` as first parameter
+
 - Input buffers are `const cdp_lib_buffer*`
+
 - Return a newly allocated buffer (caller frees)
+
 - Return NULL on error (set error message in ctx)
 
 ### Step 3: Implement in C (cdp_lib.c or new file)
@@ -539,9 +553,15 @@ if param < 0 or param > 1:
 ## Testing Checklist
 
 - [ ] Function runs without error on valid input
+
 - [ ] Function raises appropriate errors on invalid input
+
 - [ ] Output has expected length (for variable-length effects)
+
 - [ ] Output has expected characteristics (amplitude, frequency content)
+
 - [ ] Memory is properly freed (run with valgrind if available)
+
 - [ ] Works with both mono and stereo input (if applicable)
+
 - [ ] Edge cases handled (empty input, very short input, extreme parameters)

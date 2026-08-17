@@ -6,6 +6,18 @@
 
 #include "cdp_lib_internal.h"
 
+/* The vendored FFT (projects/cpd8/dev/pv/mxfft.c) writes its diagnostics into
+ * this global, declared `extern char errstr[]` by CDP's globcon.h. Nothing in
+ * this library reads it -- the FFT only writes on allocation-failure and
+ * bad-parameter paths, and those return a failure code the callers act on --
+ * but the symbol has to exist for mxfft.c to link.
+ *
+ * It lived in cdp_shim.c until that file was dropped from the build. Keeping
+ * it here rather than patching mxfft.c avoids one more divergence from
+ * upstream to carry across a re-vendoring. Hidden visibility keeps the
+ * generic name out of the extension's symbol table. */
+char errstr[2400];
+
 /* =========================================================================
  * Context Management
  * ========================================================================= */
@@ -21,7 +33,22 @@ cdp_lib_ctx* cdp_lib_init(void) {
     return ctx;
 }
 
-/* Thread-local context storage. See cdp_lib_thread_ctx() in cdp_lib.h. */
+/* Thread-local context storage. See cdp_lib_thread_ctx() in cdp_lib.h.
+ *
+ * Two mechanisms, deliberately:
+ *
+ *   - A plain thread-local pointer is the fast path. Every processing call
+ *     goes through cdp_lib_thread_ctx(), so the common case must be a load and
+ *     a branch, not a pthread_getspecific().
+ *
+ *   - A pthread key (FLS on Windows) exists only for its destructor, which the
+ *     runtime invokes when a thread exits. A plain thread-local has no such
+ *     hook, and the context was previously never freed at all: one 528-byte
+ *     allocation per thread that ever called into the library, retained for
+ *     the life of the process. That is fine for a fixed worker pool and an
+ *     unbounded leak for anything that creates a thread per request --
+ *     measured at ~2 MB per 3,000 short-lived threads, growing without limit.
+ */
 #if defined(_MSC_VER)
 #  define CDP_THREAD_LOCAL __declspec(thread)
 #elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_THREADS__)
@@ -32,11 +59,88 @@ cdp_lib_ctx* cdp_lib_init(void) {
 
 static CDP_THREAD_LOCAL cdp_lib_ctx* cdp_tls_ctx = NULL;
 
+#if defined(_WIN32)
+
+#include <windows.h>
+
+static DWORD cdp_fls_index = FLS_OUT_OF_INDEXES;
+static INIT_ONCE cdp_fls_once = INIT_ONCE_STATIC_INIT;
+
+static void WINAPI cdp_tls_destroy(void* p) {
+    free(p);
+}
+
+static BOOL CALLBACK cdp_fls_init(PINIT_ONCE once, PVOID param, PVOID* ctx) {
+    (void)once; (void)param; (void)ctx;
+    cdp_fls_index = FlsAlloc(cdp_tls_destroy);
+    return TRUE;
+}
+
+/* Returns 0 if the context will be freed at thread exit, -1 otherwise. */
+static int cdp_tls_register(cdp_lib_ctx* ctx) {
+    InitOnceExecuteOnce(&cdp_fls_once, cdp_fls_init, NULL, NULL);
+    if (cdp_fls_index == FLS_OUT_OF_INDEXES) return -1;
+    return FlsSetValue(cdp_fls_index, ctx) ? 0 : -1;
+}
+
+static void cdp_tls_unregister(void) {
+    if (cdp_fls_index != FLS_OUT_OF_INDEXES) {
+        FlsSetValue(cdp_fls_index, NULL);
+    }
+}
+
+#else
+
+#include <pthread.h>
+
+static pthread_key_t cdp_tls_key;
+static pthread_once_t cdp_tls_once = PTHREAD_ONCE_INIT;
+static int cdp_tls_key_ok = 0;
+
+static void cdp_tls_destroy(void* p) {
+    free(p);
+}
+
+static void cdp_tls_make_key(void) {
+    cdp_tls_key_ok = (pthread_key_create(&cdp_tls_key, cdp_tls_destroy) == 0);
+}
+
+static int cdp_tls_register(cdp_lib_ctx* ctx) {
+    pthread_once(&cdp_tls_once, cdp_tls_make_key);
+    if (!cdp_tls_key_ok) return -1;
+    return pthread_setspecific(cdp_tls_key, ctx) == 0 ? 0 : -1;
+}
+
+static void cdp_tls_unregister(void) {
+    if (cdp_tls_key_ok) {
+        pthread_setspecific(cdp_tls_key, NULL);
+    }
+}
+
+#endif
+
 cdp_lib_ctx* cdp_lib_thread_ctx(void) {
     if (cdp_tls_ctx == NULL) {
-        cdp_tls_ctx = cdp_lib_init();
+        cdp_lib_ctx* ctx = cdp_lib_init();
+        if (ctx == NULL) return NULL;
+        if (cdp_tls_register(ctx) != 0) {
+            /* No destructor hook available. Still hand back a working context
+             * -- refusing to process because cleanup cannot be automated would
+             * be the worse failure -- but this thread's context will leak, as
+             * every thread's did before the hook existed. */
+            cdp_tls_ctx = ctx;
+            return ctx;
+        }
+        cdp_tls_ctx = ctx;
     }
     return cdp_tls_ctx;
+}
+
+void cdp_lib_release_thread_ctx(void) {
+    if (cdp_tls_ctx == NULL) return;
+    cdp_tls_unregister();  /* so the destructor does not free it twice */
+    free(cdp_tls_ctx);
+    cdp_tls_ctx = NULL;
 }
 
 void cdp_lib_cleanup(cdp_lib_ctx* ctx) {

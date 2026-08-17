@@ -16,6 +16,7 @@ from cycdp._core import (
     version,
     gain_to_db,
     db_to_gain,
+    release_thread_context,
     # Constants
     FLAG_NONE,
     FLAG_CLIP,
@@ -203,6 +204,7 @@ __all__ = [
     # Utilities
     "gain_to_db",
     "db_to_gain",
+    "release_thread_context",
     # Constants
     "FLAG_NONE",
     "FLAG_CLIP",
@@ -387,4 +389,12 @@ __all__ = [
     "wrappage",
 ]
 
-__version__ = "0.2.0"
+# Read from the installed distribution rather than duplicated here: the
+# literal was a third copy of the version, after pyproject.toml and the C
+# library's own string, and the three had already drifted apart.
+try:
+    from importlib.metadata import PackageNotFoundError, version as _dist_version
+
+    __version__ = _dist_version("cycdp")
+except PackageNotFoundError:  # pragma: no cover - running from a source tree
+    __version__ = "0.0.0+unknown"

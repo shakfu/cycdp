@@ -823,3 +823,68 @@ class TestErrorHandling:
         out = str(tmp_path / "out.wav")
         main(["reverb", wav_file, "--decay-time", "0.5", "-o", out])
         assert os.path.exists(out)
+
+
+class TestHostileFloatOptions:
+    """A mistyped float option must not be able to crash or hang the CLI.
+
+    argparse's bare `float` accepts "nan", "inf" and "-inf", so before the
+    guards existed `cycdp grain-cloud in.wav --grainsize-ms nan` segfaulted and
+    `--density 1e9` never returned. Both are one keystroke away from a valid
+    invocation.
+    """
+
+    @pytest.mark.parametrize("text", ["nan", "inf", "-inf", "NaN", "Infinity"])
+    def test_non_finite_is_a_usage_error(self, wav_file, tmp_path, text):
+        out = str(tmp_path / "out.wav")
+        with pytest.raises(SystemExit) as exc:
+            main(["grain-cloud", wav_file, "--grainsize-ms", text, "-o", out])
+        # Exit 2 is argparse's usage error, which is what a bad option is.
+        assert exc.value.code == 2
+        assert not os.path.exists(out)
+
+    def test_the_message_names_the_option(self, wav_file, tmp_path, capsys):
+        with pytest.raises(SystemExit):
+            main(
+                [
+                    "grain-cloud",
+                    wav_file,
+                    "--grainsize-ms",
+                    "nan",
+                    "-o",
+                    str(tmp_path / "out.wav"),
+                ]
+            )
+        err = capsys.readouterr().err
+        assert "--grainsize-ms" in err
+        assert "finite" in err
+
+    @pytest.mark.parametrize(
+        "option,value",
+        [
+            ("--density", "1e9"),
+            ("--duration", "1e9"),
+        ],
+    )
+    def test_absurd_but_finite_is_a_clean_error(
+        self, wav_file, tmp_path, capsys, option, value
+    ):
+        """Exit 1 with a message, not an exhausted machine."""
+        with pytest.raises(SystemExit) as exc:
+            main(
+                [
+                    "texture-simple",
+                    wav_file,
+                    option,
+                    value,
+                    "-o",
+                    str(tmp_path / "o.wav"),
+                ]
+            )
+        assert exc.value.code == 1
+        assert "must be between" in capsys.readouterr().err
+
+    def test_ordinary_float_options_still_work(self, wav_file, tmp_path):
+        out = str(tmp_path / "ok.wav")
+        main(["grain-cloud", wav_file, "--grainsize-ms", "25.5", "-o", out])
+        assert os.path.exists(out)

@@ -1,0 +1,42 @@
+cycdp
+Copyright (c) 2024-2026 Shakeeb Alireza
+Licensed under the GNU Lesser General Public License v2.1 or later.
+See the LICENSE file at the root of this distribution for the full text.
+Paths below are relative to that root.
+
+================================================================================
+Third-party code
+================================================================================
+
+This distribution includes, and its compiled extension statically links, source
+code from the CDP System (Composers Desktop Project, Release 8):
+
+    projects/cpd8/dev/pv/mxfft.c
+    Copyright (c) 1983-2023 Trevor Wishart and Composers Desktop Project Ltd
+    http://www.trevorwishart.co.uk
+    http://www.composersdesktop.com
+    Licensed under the GNU Lesser General Public License v2.1 or later.
+
+The CDP System is available at https://github.com/ComposersDesktop/CDP8.
+
+The processing algorithms in projects/libcdp/cdp_lib/ are independent
+reimplementations written against the CDP8 sources; they are not copies of
+that code. See the Architecture section of README.md.
+
+================================================================================
+Source availability (LGPL-2.1 section 6)
+================================================================================
+
+The binary wheels published on PyPI statically link the object code produced
+from mxfft.c. The complete corresponding source for everything in a wheel is
+distributed alongside it as the cycdp source distribution (sdist) for the same
+version, on PyPI and at:
+
+    https://github.com/shakfu/cycdp
+
+Anyone receiving a wheel may obtain that source, modify the library portions,
+and relink, by building from the sdist:
+
+    pip download --no-binary :all: cycdp==<version>
+    tar xf cycdp-<version>.tar.gz && cd cycdp-<version>
+    pip install .

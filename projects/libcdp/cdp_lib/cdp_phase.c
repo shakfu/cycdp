@@ -67,7 +67,6 @@ cdp_lib_buffer* cdp_lib_phase_stereo(cdp_lib_ctx* ctx,
 
     size_t length = input->length;
     int sample_rate = input->sample_rate;
-    size_t frame_count = length / 2;
 
     if (length == 0) {
         cdp_lib_set_error(ctx, "Input buffer is empty");

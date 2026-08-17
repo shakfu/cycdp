@@ -369,7 +369,6 @@ cdp_lib_buffer* cdp_lib_distort_cut(cdp_lib_ctx* ctx,
     size_t waveset_start = 0;
     for (; i < num_samples; i++) {
         float sample = mono->data[i];
-        float prev = mono->data[i-1];
 
         if (initial_phase == 1) {
             /* Positive-first: waveset ends when we return to positive after negative */
@@ -595,8 +594,6 @@ static void interpolate_wavesets(const float* buf1, size_t len1,
                                   const float* buf2, size_t len2,
                                   float* output, size_t out_len,
                                   double interp_factor) {
-    size_t max_len = (len1 > len2) ? len1 : len2;
-
     for (size_t i = 0; i < out_len; i++) {
         /* Position in output (0-1) */
         double out_pos = (double)i / (double)out_len;
@@ -1408,7 +1405,6 @@ cdp_lib_buffer* cdp_lib_distort_warp(cdp_lib_ctx* ctx,
     }
 
     double incrval = warp;
-    double srate = (double)sample_rate;
 
     if (mode == 0) {
         /*

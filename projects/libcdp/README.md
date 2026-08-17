@@ -5,54 +5,38 @@ A native C library providing high-performance audio processing algorithms based 
 ## Features
 
 - Native C implementations of CDP spectral and granular algorithms
+
 - Zero-copy buffer interface for efficient memory usage
+
 - Concurrent use supported: one context per thread, no shared mutable state on any processing path (see Thread safety)
+
 - Python bindings via Cython (see cycdp)
 
 ## Thread safety
 
-Processing functions may be called concurrently from multiple threads, provided
-each thread uses its own context.
+Processing functions may be called concurrently from multiple threads, provided each thread uses its own context.
 
-The previous claim here -- "thread-safe design (no global state)" -- was not
-true when written. The Python bindings held a single process-wide context whose
-`error_msg` buffer and PRNG state every call mutated, `cdp_distort.c` used the C
-runtime's global `srand`/`rand`, and `cdp_wrappage.c`, `cdp_flutter.c` and
-`cdp_hover.c` each kept a file-static generator. It is true now, and the
-following is what "true" means precisely.
+The previous claim here -- "thread-safe design (no global state)" -- was not true when written. The Python bindings held a single process-wide context whose `error_msg` buffer and PRNG state every call mutated, `cdp_distort.c` used the C runtime's global `srand`/`rand`, and `cdp_wrappage.c`, `cdp_flutter.c` and `cdp_hover.c` each kept a file-static generator. It is true now, and the following is what "true" means precisely.
 
 **Guaranteed.**
 
-- Each `cdp_lib_ctx` is independent. `cdp_lib_thread_ctx()` returns a
-  per-thread context, which is what the Python bindings use; a caller managing
-  contexts directly must not share one across threads, since every call writes
-  `ctx->error_msg` and draws from `ctx->prng_state`.
-- No processing path uses global or file-static mutable state. All
-  randomisation draws from the caller's context, so a seeded operation is
-  reproducible regardless of what other threads are doing.
-- Input and output buffers are owned by the caller and are not shared between
-  operations.
+- Each `cdp_lib_ctx` is independent. `cdp_lib_thread_ctx()` returns a per-thread context, which is what the Python bindings use; a caller managing contexts directly must not share one across threads, since every call writes `ctx->error_msg` and draws from `ctx->prng_state`.
 
-Verified with ThreadSanitizer over a mixed six-thread workload covering the
-spectral, granular, distortion and morph paths: no reported races. The
-per-thread context is not precautionary -- restoring the shared singleton makes
-TSan report a data race on `ctx->prng_state` in `cdp_lib_distort_shuffle`.
+- No processing path uses global or file-static mutable state. All randomisation draws from the caller's context, so a seeded operation is reproducible regardless of what other threads are doing.
+
+- Input and output buffers are owned by the caller and are not shared between operations.
+
+Verified with ThreadSanitizer over a mixed six-thread workload covering the spectral, granular, distortion and morph paths: no reported races. The per-thread context is not precautionary -- restoring the shared singleton makes TSan report a data race on `ctx->prng_state` in `cdp_lib_distort_shuffle`.
 
 **Not guaranteed.**
 
-- A single `cdp_lib_ctx` used concurrently from two threads. Give each thread
-  its own.
-- `errstr`, a process-wide buffer the vendored FFT (`mxfft.c`) writes on its
-  error paths. Reaching it requires an FFT workspace allocation failure --
-  invalid transform sizes are rejected earlier -- and the only consequence is
-  an interleaved error message. Audio data is unaffected.
-- `cdp_shim.c` holds process-wide I/O slot state. Nothing in the current
-  library calls it, so it is unreachable from the Python API, but it would need
-  thread-local storage before being wired up.
+- A single `cdp_lib_ctx` used concurrently from two threads. Give each thread its own.
 
-**Not applicable.** These functions are not thread-safe by design and are
-unrelated to processing: `cdp_shim_*`, and any direct manipulation of a shared
-context's error state.
+- `errstr`, a process-wide buffer the vendored FFT (`mxfft.c`) writes on its error paths. Reaching it requires an FFT workspace allocation failure -- invalid transform sizes are rejected earlier -- and the only consequence is an interleaved error message. Audio data is unaffected.
+
+- `cdp_shim.c` holds process-wide I/O slot state. Nothing in the current library calls it, so it is unreachable from the Python API, but it would need thread-local storage before being wired up.
+
+**Not applicable.** These functions are not thread-safe by design and are unrelated to processing: `cdp_shim_*`, and any direct manipulation of a shared context's error state.
 
 ## Building
 
@@ -73,7 +57,9 @@ cdp_lib_buffer* cdp_lib_<function>(cdp_lib_ctx* ctx,
 ```
 
 - Returns a newly allocated buffer (caller must free with `cdp_lib_buffer_free`)
+
 - Sets error message in context on failure (retrieve with `cdp_lib_get_error`)
+
 - Input buffers are not modified
 
 ## Implemented Algorithms
@@ -269,4 +255,5 @@ This library is part of the CDP System. See LICENSE for details.
 ## References
 
 - [Composers Desktop Project](http://www.composersdesktop.com)
+
 - [Trevor Wishart](http://www.trevorwishart.co.uk)

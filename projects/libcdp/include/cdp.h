@@ -26,6 +26,18 @@ extern "C" {
  */
 const char* cdp_version(void);
 
+/* Accepted domain for WAV header fields.
+ *
+ * cdp_read_file() parses untrusted input, so these are enforced rather than
+ * assumed. The channel floor is load-bearing: a fmt chunk declaring zero
+ * channels makes the frame size zero, and the frame-count division is then an
+ * integer division by zero -- SIGFPE, and the process is gone. The sample-rate
+ * ceiling stops a small file from scaling every downstream allocation, since
+ * delay lines and output lengths are all proportional to it. */
+#define CDP_MAX_WAV_CHANNELS      64
+#define CDP_MIN_WAV_SAMPLE_RATE   1
+#define CDP_MAX_WAV_SAMPLE_RATE   768000
+
 /*============================================================================
  * Context Management
  *============================================================================*/

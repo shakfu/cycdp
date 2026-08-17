@@ -60,6 +60,27 @@ def _coverage_is_tracing() -> bool:
     return coverage.Coverage.current() is not None
 
 
+def _sanitizer_is_active() -> bool:
+    """True when ASan or TSan is loaded into this interpreter.
+
+    Both keep per-thread shadow memory and a quarantine that they never return
+    to the OS, so process RSS grows by hundreds of megabytes over a few
+    thousand threads regardless of whether the library leaks anything. Any
+    RSS-based measurement is meaningless under them -- measured at 212 MB of
+    sanitizer bookkeeping against the ~1 MB the leak test is looking for.
+    """
+    import ctypes
+
+    process = ctypes.CDLL(None)
+    for symbol in ("__asan_init", "__tsan_init"):
+        try:
+            getattr(process, symbol)
+        except AttributeError:
+            continue
+        return True
+    return False
+
+
 class TestGilIsReleased:
     # Threshold set from measurement, not assumption. With a short (~0.06s)
     # call the surrounding Python work dominates the window and a GIL-holding
@@ -359,6 +380,83 @@ class TestBufferOwnership:
         )
 
 
+class TestThreadContextLifetime:
+    """Each thread's context must be released when the thread exits.
+
+    A plain thread-local pointer has no destructor hook, so the context -- 528
+    bytes of error buffer and PRNG state -- used to be retained for the life of
+    the process, once per thread that ever called in. Harmless for a fixed
+    worker pool; an unbounded leak for a thread-per-request server. The fix is
+    a pthread key destructor (FLS on Windows).
+    """
+
+    THREADS = 2000
+
+    def _peak_rss_kb(self):
+        import resource
+        import sys
+
+        r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # macOS reports bytes, Linux kilobytes.
+        return r // 1024 if sys.platform == "darwin" else r
+
+    @pytest.mark.skipif(
+        _sanitizer_is_active(),
+        reason="sanitizer shadow memory swamps the measurement; see _sanitizer_is_active",
+    )
+    def test_short_lived_threads_do_not_accumulate_contexts(self, audio):
+        pytest.importorskip("resource", reason="POSIX-only measurement")
+        import gc
+
+        def work():
+            cycdp.bitcrush(audio)
+
+        # Warm up: the first calls fault in pages that would otherwise be
+        # counted against the measured window.
+        for _ in range(20):
+            t = threading.Thread(target=work)
+            t.start()
+            t.join()
+
+        gc.collect()
+        before = self._peak_rss_kb()
+        for _ in range(self.THREADS):
+            t = threading.Thread(target=work)
+            t.start()
+            t.join()
+        gc.collect()
+        growth = self._peak_rss_kb() - before
+
+        # ru_maxrss is a high-water mark, so this only ever detects growth --
+        # exactly what a leak is. One leaked context per thread would be about
+        # 1 MB at this thread count; the bound is set well below that and well
+        # above the ~80 KB of allocator noise actually observed.
+        leaked_kb = self.THREADS * 528 // 1024
+        assert growth < leaked_kb // 2, (
+            f"peak RSS grew {growth} KB over {self.THREADS} short-lived "
+            f"threads; leaking one context per thread would be about "
+            f"{leaked_kb} KB, so the thread-exit destructor is not firing"
+        )
+
+    def test_release_thread_context_is_safe_to_call_anytime(self):
+        """Including with no context, twice, and before further work."""
+        cycdp.release_thread_context()
+        cycdp.release_thread_context()
+        buf = cycdp.Buffer.create(1024, 1, 44100)
+        assert cycdp.bitcrush(buf).frame_count > 0
+        cycdp.release_thread_context()
+        # A fresh context must be created transparently.
+        assert cycdp.bitcrush(buf).frame_count > 0
+
+    def test_release_does_not_break_seeded_reproducibility(self):
+        """A seeded operation is seeded per call, not per context."""
+        buf = cycdp.Buffer.create(8192, 1, 44100)
+        first = cycdp.distort_shuffle(buf, chunk_count=16, seed=42).to_list()
+        cycdp.release_thread_context()
+        second = cycdp.distort_shuffle(buf, chunk_count=16, seed=42).to_list()
+        assert first == second
+
+
 class TestThreadSafetyClaimHolds:
     """M7: back the guarantee documented in projects/libcdp/README.md.
 
@@ -374,6 +472,15 @@ class TestThreadSafetyClaimHolds:
     ALLOWED: ClassVar[set[tuple[str, str]]] = {
         # Per-thread by construction.
         ("cdp_lib.c", "cdp_tls_ctx"),
+        # The pthread key (FLS index on Windows) whose destructor frees each
+        # thread's context at thread exit. Written once under pthread_once /
+        # InitOnceExecuteOnce and read-only afterwards, so it is shared but not
+        # raced. Documented in projects/libcdp/README.md.
+        ("cdp_lib.c", "cdp_tls_key"),
+        ("cdp_lib.c", "cdp_tls_once"),
+        ("cdp_lib.c", "cdp_tls_key_ok"),
+        ("cdp_lib.c", "cdp_fls_index"),
+        ("cdp_lib.c", "cdp_fls_once"),
         # Process-wide I/O slots. Unreachable: nothing outside cdp_shim.c
         # calls into it. Would need thread-local storage before being used.
         ("cdp_shim.c", "g_input_slots"),
@@ -434,6 +541,32 @@ class TestThreadSafetyClaimHolds:
             f"{callers} now call into cdp_shim.c, whose I/O slot state is "
             f"process-wide. Give it thread-local storage before wiring it up, "
             f"and update the thread-safety section of projects/libcdp/README.md"
+        )
+
+    def test_shim_is_not_compiled(self):
+        """The abandoned shim must stay out of the build.
+
+        Unreachable code is only harmless while it is also unreachable at link
+        time -- and it was linked into every wheel for a long time while
+        nothing called it. Dropping it from CDP_LIB_SOURCES is what makes the
+        process-global slot table a non-issue rather than a latent one; this
+        fails if either file is added back.
+        """
+        from pathlib import Path
+
+        cmake = (Path(__file__).resolve().parent.parent / "CMakeLists.txt").read_text()
+        # Strip comments: the source list is preceded by an explanation that
+        # names both files.
+        body = "\n".join(
+            line for line in cmake.splitlines() if not line.lstrip().startswith("#")
+        )
+        compiled = [
+            name for name in ("cdp_shim.c", "cdp_io_redirect.c") if name in body
+        ]
+        assert not compiled, (
+            f"{compiled} is back in the build. It implements an abandoned "
+            f"sfsys-interception strategy and carries process-global I/O "
+            f"state; see the header comment in cdp_shim.h before reviving it."
         )
 
     def test_readme_documents_the_guarantee(self):

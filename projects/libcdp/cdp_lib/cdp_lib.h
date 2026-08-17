@@ -1027,13 +1027,27 @@ cdp_lib_buffer* cdp_lib_tesselate(cdp_lib_ctx* ctx,
  * draws from ctx->prng_state, so two concurrent operations would corrupt each
  * other's error reporting and consume each other's seeded random stream.
  *
- * One context per thread costs ~528 bytes and is not freed when the thread
- * exits; that is bounded by thread count and avoids needing a destructor
- * callback on every platform.
+ * One context per thread costs ~528 bytes and is released automatically when
+ * the thread exits, via a pthread key destructor (FLS on Windows). It used to
+ * be retained for the life of the process, which was described as "bounded by
+ * thread count" -- true only for a fixed pool. A process that creates a thread
+ * per request accumulates one context per thread ever created, measured at
+ * ~2 MB per 3,000 short-lived threads with no upper limit.
  *
  * Returns: The calling thread's context, or NULL if allocation failed.
  */
 cdp_lib_ctx* cdp_lib_thread_ctx(void);
+
+/*
+ * Free the calling thread's context immediately.
+ *
+ * Not normally needed -- thread exit does this. Useful for a long-lived thread
+ * that will not call into the library again, and for embedders whose threads
+ * are not created by pthreads (where the destructor hook cannot fire). Safe to
+ * call when no context exists, and safe to call more than once; the next
+ * processing call simply creates a fresh context.
+ */
+void cdp_lib_release_thread_ctx(void);
 
 #ifdef __cplusplus
 }

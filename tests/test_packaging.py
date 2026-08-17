@@ -128,3 +128,121 @@ class TestWorkflowHygiene:
         assert len(versions) == 1, (
             f"build-publish.yml pins multiple cibuildwheel versions: {sorted(versions)}"
         )
+
+
+class TestExtensionSymbolVisibility:
+    """The built module must export its init function and nothing else.
+
+    The static C libraries are linked into `_core` and nothing else needs their
+    symbols, but they used to be exported anyway -- 199 of them, including
+    `errstr`, `fft_`, `fftmx` and `reals_`. Those are generic names from the
+    vendored FFT that also appear in FFTPACK-derived libraries. CPython loads
+    extensions with RTLD_LOCAL so a collision needs another extension loaded
+    with RTLD_GLOBAL in the same process, but there is no reason to leave the
+    possibility open.
+    """
+
+    def _exported(self):
+        import subprocess
+
+        import cycdp._core as core
+
+        so = Path(core.__file__)
+        if sys.platform == "win32":
+            pytest.skip("no nm on Windows; DLL exports are governed differently")
+        try:
+            out = subprocess.run(
+                ["nm", "-g", "--defined-only", str(so)],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            pytest.skip("nm unavailable")
+        return {
+            line.split()[-1].lstrip("_") for line in out.splitlines() if line.strip()
+        }
+
+    def test_only_the_module_init_is_exported(self):
+        exported = self._exported()
+        # Compiler and runtime bookkeeping symbols vary by platform; only our
+        # own C is interesting here.
+        ours = {s for s in exported if not s.startswith("_")}
+        assert ours <= {"PyInit__core"}, (
+            f"the extension exports {sorted(ours - {'PyInit__core'})} into the "
+            f"process's symbol table; build with hidden visibility so only the "
+            f"module init escapes"
+        )
+
+    def test_the_module_init_is_still_exported(self):
+        """Hiding everything would produce a module that cannot be imported."""
+        assert "PyInit__core" in self._exported()
+
+
+class TestLicenseFilesAreDistributed:
+    """LGPL 2.1 section 6 wants the source to accompany the object code.
+
+    The wheel statically links mxfft.c, which is Copyright (c) 1983-2023
+    Trevor Wishart and Composers Desktop Project Ltd. The usual mitigation is
+    that the sdist is published alongside, but a wheel that names neither the
+    copyright holders nor where to get the source leaves the recipient with
+    nothing. NOTICE does both, and must actually ship.
+    """
+
+    # Paths come from pyproject rather than being hardcoded here, so moving a
+    # license file fails the build (license-files stops resolving) rather than
+    # silently dropping it from the wheel while these tests keep passing
+    # against a stale path. NOTICE currently sits beside the C library it is
+    # mostly about, at projects/libcdp/.
+    @staticmethod
+    def declared_license_files() -> list[str]:
+        m = re.search(r"^license-files = \[(.*?)\]", PYPROJECT.read_text(), re.M)
+        assert m, "pyproject.toml declares no license-files"
+        entries = re.findall(r'"([^"]+)"', m.group(1))
+        assert entries, f"could not parse license-files from {m.group(1)!r}"
+        return entries
+
+    def notice_path(self) -> Path:
+        matches = [e for e in self.declared_license_files() if Path(e).name == "NOTICE"]
+        assert len(matches) == 1, f"expected exactly one NOTICE entry, got {matches}"
+        return REPO / matches[0]
+
+    def test_pyproject_declares_both_license_files(self):
+        entries = self.declared_license_files()
+        names = {Path(e).name for e in entries}
+        assert names == {"LICENSE", "NOTICE"}, (
+            f"pyproject.toml must declare both files so they land in the wheel; "
+            f"found {entries}"
+        )
+
+    def test_the_declared_license_files_exist(self):
+        """A path that does not resolve fails the build, but late and obscurely."""
+        for entry in self.declared_license_files():
+            assert (REPO / entry).is_file(), (
+                f"license-files names a missing path: {entry}"
+            )
+
+    def test_notice_names_the_upstream_copyright_and_the_source(self):
+        notice = self.notice_path().read_text()
+        assert "Composers Desktop Project" in notice
+        assert "mxfft.c" in notice
+        assert "sdist" in notice.lower()
+
+    def test_the_spdx_expression_has_no_competing_classifier(self):
+        """PEP 639 forbids a 'License ::' classifier beside an SPDX expression.
+
+        The build backend rejects the combination outright, so this is really a
+        guard against someone re-adding the classifier and discovering it only
+        at release time.
+        """
+        text = PYPROJECT.read_text()
+        if 'license = "' in text:
+            classifiers = [
+                line
+                for line in text.splitlines()
+                if '"License ::' in line and not line.lstrip().startswith("#")
+            ]
+            assert not classifiers, (
+                f"remove the license classifier(s) {classifiers}; they cannot "
+                f"coexist with an SPDX license expression"
+            )

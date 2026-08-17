@@ -36,11 +36,31 @@ jobs:
       - name: Check type stubs are up to date
         run: uv run python scripts/gen_stubs.py --check
 
+      # A public function whose float parameter reaches C unguarded is a crash
+      # waiting to be reported by someone else: NaN passes every
+      # comparison-based clamp in the C layer and `(size_t)nan` is undefined
+      # behaviour. The existing operations would all still pass without this,
+      # so the check exists to catch the *next* one added.
+      - name: Check every float parameter is validated
+        run: uv run python scripts/check_validation.py
+
       - name: Type check with mypy
         run: uv run mypy src/cycdp/ tests/ --exclude '.venv'
 
       - name: Run tests
         run: uv run pytest tests/ -v
+
+      # The C library was compiled at the compiler's defaults for a long time
+      # while only the Cython extension got -Wall -Wextra -- 23,000 lines,
+      # including every function that produced a crash, with warnings off.
+      # They are on for all targets now; this keeps them at zero. Scoped to the
+      # hand-written sources: mxfft.c is vendored and _core.c is generated.
+      - name: Build the C library with -Werror
+        run: |
+          cmake -S . -B build/werror \
+            -DPython_EXECUTABLE="$(uv run python -c 'import sys; print(sys.executable)')" \
+            -DCYCDP_WERROR=ON
+          cmake --build build/werror --target cdp cdp_lib -j"$(nproc)"
 
   coverage:
     name: Coverage (with Cython line tracing)
@@ -98,6 +118,36 @@ jobs:
       # the cdp_spectral_time_stretch heap-buffer-overflow was found.
       - name: Build with sanitizers and run tests
         run: make sanitize
+
+  fuzz:
+    name: API fuzz (hostile parameters, under ASan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      # The suite and the sanitizer jobs both exercise the library with
+      # well-formed input, so between them they validated it against exactly
+      # the inputs it was designed for. This drives every public function with
+      # NaN, Inf and absurd magnitudes -- the values a caller reaches by typo,
+      # or that the CLI produces because argparse accepts "nan" for any float
+      # option. It found four segfaults and thirteen hangs when first run.
+      #
+      # Under ASan so that an out-of-bounds read is a precise report rather
+      # than an exit code. Linux only: the harness runs each call in a
+      # subprocess and LD_PRELOAD is inherited, where macOS strips DYLD_*.
+      - name: Fuzz the API under the sanitizer
+        run: make fuzz-sanitize
 
   tsan:
     name: ThreadSanitizer

@@ -20,6 +20,22 @@ class TestVersion:
         parts = v.split(".")
         assert len(parts) >= 2
 
+    def test_c_library_version_matches_the_package(self):
+        """One version, three places it used to be written down.
+
+        cycdp.version() comes from the C library, __version__ from the
+        installed distribution, and both trace back to pyproject.toml. They had
+        drifted -- the C string still said 0.1.0 at package version 0.2.0, so
+        the call a user makes to find out what they have gave the wrong answer.
+        Only a semver-shape assertion existed, which could not catch that.
+        """
+        assert cycdp.version() == cycdp.__version__
+
+    def test_version_is_not_the_unknown_fallback(self):
+        """Both fallbacks are visible strings, so a broken build says so."""
+        assert "unknown" not in cycdp.version()
+        assert "unknown" not in cycdp.__version__
+
 
 class TestUtilities:
     def test_gain_to_db_unity(self):
@@ -3650,8 +3666,12 @@ class TestStutter:
 
     def test_stutter_invalid_params(self, sine_buffer):
         """Stutter should reject invalid parameters."""
-        with pytest.raises(ValueError, match="segment_ms must be positive"):
+        with pytest.raises(ValueError, match="segment_ms must be between"):
             cycdp.stutter(sine_buffer, segment_ms=0, duration=1.0)
+        # A positive but vanishing segment size implies an unbounded number of
+        # segments; the floor is what makes this terminate, not the sign check.
+        with pytest.raises(ValueError, match="segment_ms must be between"):
+            cycdp.stutter(sine_buffer, segment_ms=1e-30, duration=1.0)
         with pytest.raises(ValueError, match="duration must be positive"):
             cycdp.stutter(sine_buffer, segment_ms=50.0, duration=0)
 

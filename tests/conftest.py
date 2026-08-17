@@ -204,6 +204,45 @@ def energy_at(buf: cycdp.Buffer, freq: float) -> float:
     return goertzel(to_mono_list(buf), freq, buf.sample_rate)
 
 
+def channel(buf: cycdp.Buffer, index: int) -> list[float]:
+    """One channel of an interleaved Buffer.
+
+    `to_mono_list` averages, which is exactly wrong for the spatial operations:
+    a stereo pair that is anti-correlated averages to silence, so a peak
+    measured on the average reads zero however loud each channel is.
+    """
+    return buf.to_list()[index :: buf.channels]
+
+
+def channel_rms(buf: cycdp.Buffer, index: int) -> float:
+    values = channel(buf, index)
+    if not values:
+        return 0.0
+    return math.sqrt(sum(v * v for v in values) / len(values))
+
+
+def channel_peak(buf: cycdp.Buffer, index: int) -> float:
+    return max((abs(v) for v in channel(buf, index)), default=0.0)
+
+
+def envelope_energy_at(buf: cycdp.Buffer, freq: float) -> float:
+    """Energy of the *amplitude envelope* at a given rate.
+
+    Rectify, remove the DC term, and run the same single-bin DFT over what is
+    left. This is how a modulation rate is measured: tremolo at 5 Hz puts its
+    energy at 5 Hz in the envelope, not in the signal spectrum.
+    """
+    samples = [abs(s) for s in to_mono_list(buf)]
+    if not samples:
+        return 0.0
+    mean = sum(samples) / len(samples)
+    return goertzel([s - mean for s in samples], freq, buf.sample_rate)
+
+
+def midi_to_hz(note: int) -> float:
+    return 440.0 * 2.0 ** ((note - 69) / 12.0)
+
+
 def rms(buf: cycdp.Buffer) -> float:
     samples = to_mono_list(buf)
     if not samples:

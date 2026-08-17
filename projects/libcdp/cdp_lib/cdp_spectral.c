@@ -19,12 +19,15 @@
 extern int fft_(float *a, float *b, int nseg, int n, int nspn, int isn);
 
 /*
- * Hanning window function
+ * Fill a Hann window.
+ *
+ * Held as an array rather than applied in place, because both the analysis and
+ * the synthesis fold their frame through a rotation, so the windowing and the
+ * copy cannot be one pass over the same memory.
  */
-static void apply_window(float *data, int size) {
+static void fill_window(float *window, int size) {
     for (int i = 0; i < size; i++) {
-        float window = 0.5f * (1.0f - cosf(2.0f * (float)M_PI * i / (size - 1)));
-        data[i] *= window;
+        window[i] = 0.5f * (1.0f - cosf(2.0f * (float)M_PI * i / (size - 1)));
     }
 }
 
@@ -48,12 +51,28 @@ static void cartesian_to_polar(float *real, float *imag, float *amp, float *freq
         float phase_diff = phase - last_phase[i];
         last_phase[i] = phase;
 
-        /* Unwrap phase */
+        /* Wrap the raw difference. Correct here only because the caller folds
+         * the frame into the transform buffer with a rotation of (n mod N),
+         * which references the phase to absolute time: a partial sitting
+         * exactly on a bin centre then shows no advance at all between hops,
+         * so the raw difference already *is* the deviation. Without that
+         * rotation bin i would advance by i*expect per hop and this would have
+         * to subtract it first. See cdp_spectral_analyze. */
         while (phase_diff > M_PI) phase_diff -= 2.0f * (float)M_PI;
         while (phase_diff < -M_PI) phase_diff += 2.0f * (float)M_PI;
 
-        /* Convert to frequency deviation */
-        float freq_dev = (phase_diff - i * expect) / expect;
+        /* Deviation in bins, plus the bin's own centre frequency.
+         *
+         * Negated because mxfft's forward transform uses the opposite sign
+         * convention from the one this formula assumes, so a partial above its
+         * bin centre measures a falling phase. The negation was invisible for
+         * as long as analysis and synthesis were only ever each other's
+         * inverse -- it cancelled -- but it made freq[] the reflection of the
+         * true frequency about the bin centre, and any transform that reads or
+         * writes freq[] as a frequency inherited the error. With it corrected,
+         * get_partials reports an isolated tone exactly rather than to within
+         * a bin. */
+        float freq_dev = -phase_diff / expect;
         freq[i] = (i + freq_dev) * freq_per_bin;
     }
 }
@@ -68,10 +87,24 @@ static void polar_to_cartesian(float *amp, float *freq, float *real, float *imag
     float expect = 2.0f * (float)M_PI * hop_size / fft_size;
 
     for (int i = 0; i < num_bins; i++) {
+        /* Accumulate only the deviation from the bin's centre frequency. The
+         * centre itself is carried by the bin's position in the transform,
+         * which the output rotation in cdp_spectral_synthesize references to
+         * absolute time -- the mirror of what the analysis does.
+         *
+         * Accumulating the absolute frequency instead makes the bin index and
+         * the phase accumulator both encode position, so the two double-count.
+         * That is self-consistent for an unmodified spectrum, which is why it
+         * round-tripped, but it means moving amplitude between bins perturbs
+         * a relationship the synthesis depends on: measured before this
+         * change, a translation was coherent only in multiples of
+         * fft_size / (2 * hop) bins and cancelled everywhere in between. */
         float freq_dev = freq[i] / freq_per_bin - i;
-        float phase_inc = (i + freq_dev) * expect;
 
-        synth_phase[i] += phase_inc;
+        /* Subtracted, matching the sign convention corrected in
+         * cartesian_to_polar. The pair has to agree or the round trip stops
+         * reconstructing its input. */
+        synth_phase[i] -= freq_dev * expect;
 
         real[i] = amp[i] * cosf(synth_phase[i]);
         imag[i] = amp[i] * sinf(synth_phase[i]);
@@ -141,21 +174,37 @@ cdp_spectral_data* cdp_spectral_analyze(const float *audio, size_t num_samples,
     float *real = (float *)malloc(fft_size * sizeof(float));
     float *imag = (float *)malloc(fft_size * sizeof(float));
     float *last_phase = (float *)calloc(num_bins, sizeof(float));
+    float *window = (float *)malloc(fft_size * sizeof(float));
 
-    if (real == NULL || imag == NULL || last_phase == NULL) {
+    if (real == NULL || imag == NULL || last_phase == NULL || window == NULL) {
         free(real);
         free(imag);
         free(last_phase);
+        free(window);
         cdp_spectral_data_free(result);
         free(mono);
         return NULL;
     }
 
+    fill_window(window, fft_size);
+
     /* Analyze each frame */
     for (int frame = 0; frame < num_frames; frame++) {
         int offset = frame * hop_size;
 
-        /* Copy and window the frame */
+        /* Fold the windowed frame into the transform buffer rotated by
+         * (offset mod fft_size), following CDP's pvoc (dev/pv/pvoc.c, the
+         * `k = nI - analWinLen - 1` index in the analysis loop).
+         *
+         * This is what makes the bin index mean something. With the rotation
+         * the transform's phase is referenced to absolute time rather than to
+         * the start of the frame, so a partial sitting exactly on a bin centre
+         * shows no phase advance from hop to hop, and the raw phase difference
+         * is the deviation. Without it every bin advances by i*expect per hop,
+         * which the analysis then has to subtract back out -- self-consistent,
+         * but it leaves the bin index carrying no information the synthesis
+         * can use, so relocating amplitude between bins does not relocate the
+         * sound. That was the root cause behind spectral_shift. */
         memset(real, 0, fft_size * sizeof(float));
         memset(imag, 0, fft_size * sizeof(float));
 
@@ -163,8 +212,13 @@ cdp_spectral_data* cdp_spectral_analyze(const float *audio, size_t num_samples,
         if (offset + copy_size > (int)mono_samples) {
             copy_size = (int)mono_samples - offset;
         }
-        memcpy(real, mono + offset, copy_size * sizeof(float));
-        apply_window(real, fft_size);
+
+        int rot = offset % fft_size;
+        for (int i = 0; i < copy_size; i++) {
+            int k = rot + i;
+            if (k >= fft_size) k -= fft_size;
+            real[k] = mono[offset + i] * window[i];
+        }
 
         /* Forward FFT */
         fft_(real, imag, 1, fft_size, 1, 1);
@@ -179,6 +233,7 @@ cdp_spectral_data* cdp_spectral_analyze(const float *audio, size_t num_samples,
             free(real);
             free(imag);
             free(last_phase);
+            free(window);
             cdp_spectral_data_free(result);
             free(mono);
             return NULL;
@@ -195,6 +250,7 @@ cdp_spectral_data* cdp_spectral_analyze(const float *audio, size_t num_samples,
     free(real);
     free(imag);
     free(last_phase);
+    free(window);
     free(mono);
 
     return result;
@@ -219,15 +275,20 @@ float* cdp_spectral_synthesize(const cdp_spectral_data *spectral,
     float *imag = (float *)malloc(fft_size * sizeof(float));
     float *synth_phase = (float *)calloc(num_bins, sizeof(float));
     float *frame_out = (float *)malloc(fft_size * sizeof(float));
+    float *window = (float *)malloc(fft_size * sizeof(float));
 
-    if (real == NULL || imag == NULL || synth_phase == NULL || frame_out == NULL) {
+    if (real == NULL || imag == NULL || synth_phase == NULL ||
+        frame_out == NULL || window == NULL) {
         free(real);
         free(imag);
         free(synth_phase);
         free(frame_out);
+        free(window);
         free(output);
         return NULL;
     }
+
+    fill_window(window, fft_size);
 
     /* Synthesize each frame */
     for (int frame = 0; frame < num_frames; frame++) {
@@ -250,12 +311,18 @@ float* cdp_spectral_synthesize(const cdp_spectral_data *spectral,
         /* Inverse FFT */
         fft_(real, imag, 1, fft_size, 1, -1);
 
-        /* Window and overlap-add */
-        apply_window(real, fft_size);
-
+        /* Window and overlap-add, unrotating by (offset mod fft_size) to
+         * undo what the analysis folded in. CDP does the same on its way out
+         * (dev/pv/pvoc.c, the `k = nO - synWinLen - 1` index in the
+         * overlap-add loop). The two rotations have to match or the frames
+         * land on top of each other at the wrong alignment. */
         int offset = frame * hop_size;
+        int rot = offset % fft_size;
+
         for (int i = 0; i < fft_size && offset + i < (int)output_len; i++) {
-            output[offset + i] += real[i];
+            int k = rot + i;
+            if (k >= fft_size) k -= fft_size;
+            output[offset + i] += real[k] * window[i];
         }
     }
 
@@ -290,6 +357,7 @@ float* cdp_spectral_synthesize(const cdp_spectral_data *spectral,
     free(imag);
     free(synth_phase);
     free(frame_out);
+    free(window);
 
     *out_samples = output_len;
     return output;
@@ -503,6 +571,58 @@ static cdp_spectral_data* cdp_spectral_data_copy(const cdp_spectral_data *input)
     return output;
 }
 
+/*
+ * Move each bin's (amplitude, frequency) pair to the destination bin the
+ * caller nominates, writing into a separate output frame.
+ *
+ * Both frequency transforms below used to rewrite freq[] in place and leave
+ * the amplitude where it was. That does not move anything. The synthesis
+ * reconstructs bin i at bin i's centre frequency and uses the inter-frame
+ * phase advance only for the sub-bin remainder, so a frequency more than about
+ * one bin away from the amplitude carrying it decoheres across the overlap-add
+ * rather than relocating. Measured on a 440 Hz tone: a 2.3-bin shift kept 9%
+ * of the energy and what survived peaked on the wrong side of the input, and a
+ * 2x stretch of a 2 kHz tone left the peak at 1930 Hz having destroyed 87% of
+ * the signal.
+ *
+ * The destination is nominated per *bin index*, not derived here from the new
+ * frequency. Deriving it from the frequency looks more natural and is wrong: a
+ * sinusoid's main lobe spans several bins that the analysis all assigns
+ * essentially the same frequency, so every one of them maps to a single
+ * destination and the lobe collapses to a point. Translating by index carries
+ * the lobe across intact. Measured: the frequency-derived version broke even
+ * the identity case, taking a 440 Hz tone from 0.354 RMS to 0.013.
+ *
+ * Where several source bins do land in the same destination the loudest wins.
+ * Summing would be wrong -- the amplitudes represent different frequencies and
+ * are not in phase, so adding them overstates the result.
+ *
+ * Destinations nothing maps to are silent, with their frequency set to the bin
+ * centre so the synthesis has a defined value rather than a stale one.
+ */
+static void spectral_relocate(const float *in_amp, const int *dest,
+                              const float *new_freq,
+                              float *out_amp, float *out_freq,
+                              int num_bins, float freq_per_bin) {
+    for (int bin = 0; bin < num_bins; bin++) {
+        out_amp[bin] = 0.0f;
+        out_freq[bin] = bin * freq_per_bin;
+    }
+
+    for (int bin = 0; bin < num_bins; bin++) {
+        int target = dest[bin];
+        if (target < 0 || target >= num_bins) continue;
+
+        /* Rejects NaN as well as out-of-band frequencies. */
+        if (!(new_freq[bin] > 0.0f)) continue;
+
+        if (in_amp[bin] > out_amp[target]) {
+            out_amp[target] = in_amp[bin];
+            out_freq[target] = new_freq[bin];
+        }
+    }
+}
+
 cdp_spectral_data* cdp_spectral_freq_shift(const cdp_spectral_data *input,
                                             double shift_hz) {
     if (input == NULL) return NULL;
@@ -511,18 +631,40 @@ cdp_spectral_data* cdp_spectral_freq_shift(const cdp_spectral_data *input,
     if (output == NULL) return NULL;
 
     int num_bins = input->num_bins;
+    float freq_per_bin = input->sample_rate / input->fft_size;
 
-    /* Apply frequency shift to all frames */
-    for (int frame = 0; frame < output->num_frames; frame++) {
-        float *freq = output->frames[frame].data + num_bins;
+    /* A shift is a rigid translation of the spectrum, so every bin moves by
+     * the same whole number of bins and the remainder -- always under half a
+     * bin -- is left to the frequency field, which the phase advance handles
+     * accurately. */
+    int bin_shift = (int)floorf((float)shift_hz / freq_per_bin + 0.5f);
 
-        for (int bin = 0; bin < num_bins; bin++) {
-            freq[bin] += (float)shift_hz;
-            /* Clamp to positive frequencies */
-            if (freq[bin] < 0) freq[bin] = 0;
-        }
+    float *new_freq = (float *)malloc(num_bins * sizeof(float));
+    int *dest = (int *)malloc(num_bins * sizeof(int));
+    if (new_freq == NULL || dest == NULL) {
+        free(new_freq);
+        free(dest);
+        cdp_spectral_data_free(output);
+        return NULL;
     }
 
+    for (int frame = 0; frame < output->num_frames; frame++) {
+        const float *in_amp = input->frames[frame].data;
+        const float *in_freq = input->frames[frame].data + num_bins;
+        float *out_amp = output->frames[frame].data;
+        float *out_freq = output->frames[frame].data + num_bins;
+
+        for (int bin = 0; bin < num_bins; bin++) {
+            dest[bin] = bin + bin_shift;
+            new_freq[bin] = in_freq[bin] + (float)shift_hz;
+        }
+
+        spectral_relocate(in_amp, dest, new_freq, out_amp, out_freq,
+                          num_bins, freq_per_bin);
+    }
+
+    free(new_freq);
+    free(dest);
     return output;
 }
 
@@ -537,15 +679,50 @@ cdp_spectral_data* cdp_spectral_freq_stretch(const cdp_spectral_data *input,
 
     int num_bins = input->num_bins;
     float nyquist = input->sample_rate / 2.0f;
+    float freq_per_bin = input->sample_rate / input->fft_size;
 
     /* Calculate stretch range */
     double stretch_range = max_stretch - 1.0;
 
+    float *new_freq = (float *)malloc(num_bins * sizeof(float));
+    int *dest = (int *)malloc(num_bins * sizeof(int));
+    if (new_freq == NULL || dest == NULL) {
+        free(new_freq);
+        free(dest);
+        cdp_spectral_data_free(output);
+        return NULL;
+    }
+
+    /* The stretch factor varies with frequency, so unlike a shift the
+     * displacement has to be computed per bin. It is derived from the bin's
+     * own centre frequency rather than from the analysed frequency of whatever
+     * is in it: neighbouring bins of one partial share an analysed frequency,
+     * so using that would send the whole main lobe to a single destination.
+     * Centre frequencies are distinct by construction, so the lobe is carried
+     * across as a unit. */
+    for (int bin = 0; bin < num_bins; bin++) {
+        float centre = bin * freq_per_bin;
+        double factor = 1.0;
+
+        if (centre > freq_divide) {
+            double pos = (centre - freq_divide) / (nyquist - freq_divide);
+            if (pos < 0) pos = 0;
+            if (pos > 1) pos = 1;
+            factor = 1.0 + stretch_range * pow(pos, exponent);
+        }
+
+        dest[bin] = (int)floor(bin * factor + 0.5);
+    }
+
     for (int frame = 0; frame < output->num_frames; frame++) {
-        float *freq = output->frames[frame].data + num_bins;
+        const float *in_amp = input->frames[frame].data;
+        const float *in_freq = input->frames[frame].data + num_bins;
+        float *out_amp = output->frames[frame].data;
+        float *out_freq = output->frames[frame].data + num_bins;
 
         for (int bin = 0; bin < num_bins; bin++) {
-            float f = freq[bin];
+            float f = in_freq[bin];
+            new_freq[bin] = f;
 
             if (f > freq_divide) {
                 /* Calculate position in stretch range (0 to 1) */
@@ -557,11 +734,18 @@ cdp_spectral_data* cdp_spectral_freq_stretch(const cdp_spectral_data *input,
                 double stretch_factor = 1.0 + stretch_range * pow(pos, exponent);
 
                 /* Apply stretch */
-                freq[bin] = (float)(f * stretch_factor);
+                new_freq[bin] = (float)(f * stretch_factor);
             }
         }
+
+        /* See spectral_relocate: the amplitude has to travel with the
+         * frequency, or the partial stays where it was and cancels. */
+        spectral_relocate(in_amp, dest, new_freq, out_amp, out_freq,
+                          num_bins, freq_per_bin);
     }
 
+    free(new_freq);
+    free(dest);
     return output;
 }
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from typing import Any
@@ -1609,7 +1610,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help=help_text,
                     )
             else:
-                kw = {"type": ptype, "help": help_text, "dest": kwarg_name}
+                argtype = finite_float if ptype is float else ptype
+                kw = {"type": argtype, "help": help_text, "dest": kwarg_name}
                 if default is REQUIRED:
                     kw["required"] = True
                 else:
@@ -1689,6 +1691,22 @@ def build_parser() -> argparse.ArgumentParser:
 # =============================================================================
 # Output path resolution
 # =============================================================================
+
+
+def finite_float(text: str) -> float:
+    """argparse type for a float option, rejecting nan and inf.
+
+    argparse's bare `float` accepts "nan", "inf" and "-inf", so a typo went
+    straight through to the C layer -- where NaN passes every
+    comparison-based clamp and the result was a segfault rather than a
+    complaint. The library rejects non-finite parameters itself now; doing it
+    here as well turns a mistyped option into a usage error, which is what it
+    is, and reports it before any file is read.
+    """
+    value = float(text)  # ValueError becomes argparse's "invalid value"
+    if not math.isfinite(value):
+        raise argparse.ArgumentTypeError(f"must be a finite number, got {text!r}")
+    return value
 
 
 def resolve_output_path(args, cmd_name: str, input_path: str | None = None) -> str:

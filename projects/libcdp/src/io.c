@@ -10,6 +10,7 @@
  */
 
 #include "cdp.h"
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,9 +57,16 @@ static float int24_to_float(const uint8_t* p) {
     return (float)val / 8388608.0f;  /* 2^23 */
 }
 
-/* Convert float to 24-bit signed */
+/* Convert float to 24-bit signed.
+ *
+ * The NaN case is not hypothetical padding: a comparison-based clamp cannot
+ * reject NaN (both `v > 1.0f` and `v < -1.0f` are false for it), so it would
+ * reach the cast, and converting NaN to an integer is undefined behaviour.
+ * Silence is the only defensible substitute -- there is no sample value it
+ * means. */
 static void float_to_int24(uint8_t* p, float v) {
-    /* Clamp to [-1, 1] */
+    if (!(v == v)) v = 0.0f;  /* NaN */
+    /* Clamp to [-1, 1]; also catches +/-Inf */
     if (v > 1.0f) v = 1.0f;
     if (v < -1.0f) v = -1.0f;
     int32_t val = (int32_t)(v * 8388607.0f);  /* 2^23 - 1 */
@@ -88,6 +96,19 @@ cdp_buffer* cdp_read_file(cdp_context* ctx, const char* path)
     if (!f) {
         if (ctx) cdp_set_error(ctx, CDP_ERROR_IO, "Cannot open file: %s", path);
         return NULL;
+    }
+
+    /* Actual file length, used below to reject a data chunk that claims to be
+     * larger than the file. Without it, four attacker-controlled bytes request
+     * an arbitrary allocation: a 100-byte file declaring data_size 0xFFFFFFF0
+     * attempts a 4 GB malloc before the short read is noticed. */
+    long file_size = -1;
+    if (fseek(f, 0, SEEK_END) == 0) {
+        file_size = ftell(f);
+    }
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        if (ctx) cdp_set_error(ctx, CDP_ERROR_IO, "Cannot seek file: %s", path);
+        goto error;
     }
 
     /* Read RIFF header (12 bytes) */
@@ -136,9 +157,16 @@ cdp_buffer* cdp_read_file(cdp_context* ctx, const char* path)
                 audio_format = read_u16_le(fmt + 24);
             }
 
-            /* Skip rest of chunk if any */
+            /* Skip rest of chunk if any (see the unknown-chunk branch below
+             * for why the range check matters on 32-bit `long`). */
             if (chunk_size > to_read) {
-                fseek(f, (long)(chunk_size - to_read), SEEK_CUR);
+                uint32_t skip = chunk_size - (uint32_t)to_read;
+                if (skip > (uint32_t)LONG_MAX ||
+                    fseek(f, (long)skip, SEEK_CUR) != 0) {
+                    if (ctx) cdp_set_error(ctx, CDP_ERROR_FORMAT,
+                        "Truncated fmt chunk");
+                    goto error;
+                }
             }
 
             found_fmt = 1;
@@ -161,6 +189,44 @@ cdp_buffer* cdp_read_file(cdp_context* ctx, const char* path)
                 if (ctx) cdp_set_error(ctx, CDP_ERROR_FORMAT,
                     "Unsupported bit depth: %d", bits_per_sample);
                 goto error;
+            }
+
+            /* num_channels and sample_rate come straight out of the file and
+             * must be checked before they are used to compute anything.
+             *
+             * Zero channels is the dangerous one: frame_size becomes 0 and the
+             * division below is integer division by zero, which raises SIGFPE
+             * on x86-64 and takes the whole process down. cdp_buffer_create
+             * rejects channels <= 0, but that is one line too late.
+             *
+             * An absurd-but-positive sample rate is the other: it survives the
+             * cast to int and then scales delay lines and output lengths in
+             * every downstream operation -- a 4 KB file declaring 2e9 Hz makes
+             * reverb ask for several gigabytes. */
+            if (num_channels < 1 || num_channels > CDP_MAX_WAV_CHANNELS) {
+                if (ctx) cdp_set_error(ctx, CDP_ERROR_FORMAT,
+                    "Unsupported channel count: %u", (unsigned)num_channels);
+                goto error;
+            }
+            if (sample_rate < CDP_MIN_WAV_SAMPLE_RATE ||
+                sample_rate > CDP_MAX_WAV_SAMPLE_RATE) {
+                if (ctx) cdp_set_error(ctx, CDP_ERROR_FORMAT,
+                    "Unsupported sample rate: %u Hz", (unsigned)sample_rate);
+                goto error;
+            }
+
+            /* A declared data size larger than what is left in the file is
+             * either corruption or an amplification attempt; either way there
+             * is no reason to allocate for it. */
+            if (file_size >= 0) {
+                long here = ftell(f);
+                if (here >= 0 && (unsigned long)chunk_size >
+                                 (unsigned long)(file_size - here)) {
+                    if (ctx) cdp_set_error(ctx, CDP_ERROR_FORMAT,
+                        "data chunk declares %u bytes but only %ld remain",
+                        (unsigned)chunk_size, file_size - here);
+                    goto error;
+                }
             }
 
             /* Calculate samples */
@@ -228,8 +294,22 @@ cdp_buffer* cdp_read_file(cdp_context* ctx, const char* path)
             return buf;
         }
         else {
-            /* Skip unknown chunk */
-            fseek(f, (long)chunk_size, SEEK_CUR);
+            /* Skip unknown chunk.
+             *
+             * chunk_size is uint32 and `long` is 32-bit on Windows, so a chunk
+             * declaring more than LONG_MAX bytes would cast to a negative
+             * offset and seek *backwards* -- the scan would then re-read the
+             * same bytes forever. Reject rather than seek. */
+            if (chunk_size > (uint32_t)LONG_MAX) {
+                if (ctx) cdp_set_error(ctx, CDP_ERROR_FORMAT,
+                    "Chunk size out of range: %u", (unsigned)chunk_size);
+                goto error;
+            }
+            if (fseek(f, (long)chunk_size, SEEK_CUR) != 0) {
+                if (ctx) cdp_set_error(ctx, CDP_ERROR_FORMAT,
+                    "Truncated chunk");
+                goto error;
+            }
         }
     }
 
@@ -270,6 +350,17 @@ cdp_error cdp_write_file(cdp_context* ctx, const char* path, const cdp_buffer* b
     uint32_t bytes_per_sample = bits_per_sample / 8;
     uint32_t block_align = num_channels * bytes_per_sample;
     uint32_t byte_rate = sample_rate * block_align;
+    /* A WAV chunk size is 32 bits. Past that the cast silently truncates and
+     * the file is written "successfully" with a header that understates its
+     * own payload -- a corrupt file and a zero exit status, which is worse
+     * than an error. */
+    if (buf->sample_count > (size_t)(UINT32_MAX - 36) / bytes_per_sample) {
+        if (ctx) cdp_set_error(ctx, CDP_ERROR_DATA,
+            "Buffer is too large for a WAV file (%zu samples)",
+            buf->sample_count);
+        fclose(f);
+        return CDP_ERROR_DATA;
+    }
     uint32_t data_size = (uint32_t)(buf->sample_count * bytes_per_sample);
     uint32_t file_size = 36 + data_size;
 
@@ -342,6 +433,17 @@ cdp_error cdp_write_file_pcm16(cdp_context* ctx, const char* path, const cdp_buf
     uint32_t bytes_per_sample = bits_per_sample / 8;
     uint32_t block_align = num_channels * bytes_per_sample;
     uint32_t byte_rate = sample_rate * block_align;
+    /* A WAV chunk size is 32 bits. Past that the cast silently truncates and
+     * the file is written "successfully" with a header that understates its
+     * own payload -- a corrupt file and a zero exit status, which is worse
+     * than an error. */
+    if (buf->sample_count > (size_t)(UINT32_MAX - 36) / bytes_per_sample) {
+        if (ctx) cdp_set_error(ctx, CDP_ERROR_DATA,
+            "Buffer is too large for a WAV file (%zu samples)",
+            buf->sample_count);
+        fclose(f);
+        return CDP_ERROR_DATA;
+    }
     uint32_t data_size = (uint32_t)(buf->sample_count * bytes_per_sample);
     uint32_t file_size = 36 + data_size;
 
@@ -386,7 +488,8 @@ cdp_error cdp_write_file_pcm16(cdp_context* ctx, const char* path, const cdp_buf
 
         for (size_t j = 0; j < count; j++) {
             float v = samples[i + j];
-            /* Clamp to [-1, 1] */
+            if (!(v == v)) v = 0.0f;  /* NaN: see float_to_int24 */
+            /* Clamp to [-1, 1]; also catches +/-Inf */
             if (v > 1.0f) v = 1.0f;
             if (v < -1.0f) v = -1.0f;
             chunk[j] = (int16_t)(v * 32767.0f);
@@ -433,6 +536,17 @@ cdp_error cdp_write_file_pcm24(cdp_context* ctx, const char* path, const cdp_buf
     uint32_t bytes_per_sample = 3;
     uint32_t block_align = num_channels * bytes_per_sample;
     uint32_t byte_rate = sample_rate * block_align;
+    /* A WAV chunk size is 32 bits. Past that the cast silently truncates and
+     * the file is written "successfully" with a header that understates its
+     * own payload -- a corrupt file and a zero exit status, which is worse
+     * than an error. */
+    if (buf->sample_count > (size_t)(UINT32_MAX - 36) / bytes_per_sample) {
+        if (ctx) cdp_set_error(ctx, CDP_ERROR_DATA,
+            "Buffer is too large for a WAV file (%zu samples)",
+            buf->sample_count);
+        fclose(f);
+        return CDP_ERROR_DATA;
+    }
     uint32_t data_size = (uint32_t)(buf->sample_count * bytes_per_sample);
     uint32_t file_size = 36 + data_size;
 

@@ -6,6 +6,118 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.0]
+
+A minor rather than a patch release: several changes reject input that previously reached the C layer, so a caller relying on the old behaviour will now see a `ValueError` where it used to get a segfault, a hang, or silence. `buf[-1]` also changes meaning, and two spectral operations produce different -- correct -- output. Details under Changed and Fixed.
+
+### Fixed
+
+- The phase vocoder is ported from CDP's own (`dev/pv/pvoc.c`), which fixes four operations at once and explains why they were broken.
+
+  Our analysis copied each frame straight into the transform buffer. CDP folds it in **rotated by `n mod N`**, which references the phase to absolute time: a partial sitting exactly on a bin centre then shows no advance between hops, so the raw phase difference already *is* the deviation from that centre. Without the rotation every bin advances by `i * expect` per hop, which the analysis has to subtract back out -- self-consistent, but it leaves the bin index carrying no information the synthesis can use. The synthesis correspondingly accumulated the absolute frequency where CDP accumulates only the deviation (`oldOutPhase[i] += freq[i] - i*F`), so bin index and phase accumulator both encoded position and double-counted. Moving amplitude between bins therefore did not move the sound: a translation was coherent only in multiples of `fft_size / (2 * hop)` bins and cancelled everywhere in between.
+
+  A third defect fell out once the first two were fixed: the frequency deviation carried the wrong sign, because mxfft's forward transform uses the opposite convention from the one the formula assumes. Like the others it cancelled on any analyse-then-synthesise path, and it made `freq[]` the reflection of the true frequency about its bin centre.
+
+  What this fixes, none of which any prior test could see:
+
+  - `spectral_shift` works. A +100 Hz shift of a 440 Hz tone lands on 540 Hz within 1 Hz at ~90% of the input level. It previously peaked at 340 Hz with 9% of the energy, and a shift of zero returned near-silence.
+
+  - `spectral_stretch` works, and matches its documented curve to 0.0% at 2, 5, 8 and 11 kHz. It previously left a 2 kHz partial at 1930 Hz having destroyed 87% of the signal.
+
+  - `spectral_fold` recovers 80% of the input level where it produced 8%.
+
+  - `get_partials` reports an isolated tone exactly -- 200, 400, 800 and 1600 Hz all to 0.00% -- where it was biased by up to 15%, and a 300/600/900 harmonic series comes back exactly rather than to within 1%.
+
+  `time_stretch`, `pitch_shift`, the filters, `eq_parametric` and the morph family were correct before and remain correct: pitch shifts land within 0.1%, the filters and EQ are unchanged, and time stretch preserves duration and pitch. Their samples differ because the phase reference moved, which is why this is a minor release. Verified against a fingerprint of all 26 operations on this path.
+
+- Every public function now rejects a non-finite floating-point parameter. Neither layer checked for NaN or Inf: they pass every comparison-based clamp in the C code (`if (x < 0) x = 0;` is false for NaN), and `(size_t)nan` is undefined behaviour. Systematically driving each parameter of all 132 public functions to hostile values produced four crashes -- SIGSEGV in `drunk` and `grain_cloud`, SIGBUS in `crystal` and `wrappage` -- and thirteen calls that never returned. All were reachable from ordinary Python, and all were reachable from the `cycdp` command line, because argparse accepts `nan` for any float option. `scripts/check_validation.py` fails the build if a function is added without a guard.
+
+- Parameters that scale an allocation or an iteration count are bounded, not merely checked for finiteness. Several docstrings already promised a range (`retime`'s `grain_ms` says "Range: 5-500", `synth_wave`'s `duration` says "0.001 to 3600") that nothing enforced. Those are enforced now, and the parameters that had no documented range and drove unbounded work -- `time_stretch(factor=1e9)`, `texture_simple(density=1e9)`, `formants(lpc_order=2147483647)`, `cascade(pitch_decay=1e-30)` -- have explicit limits, stated in the error message.
+
+- Out-of-bounds read in `drunk`. When `step_ms` exceeded the input length, the walk's upper clamp evaluated to a negative value that was assigned straight into a `size_t`; the next iteration's bounds check then computed `input_frames - seg_start` with `seg_start` past the end, underflowing to a near-`SIZE_MAX` segment length, and the copy loop read far outside the input.
+
+- Three loops that could run forever. `drunk` and `stutter` both `continue` when a segment is unusable without advancing the output position, so a configuration where no segment is ever usable span indefinitely; both now reject that configuration up front and carry a retry bound. `grain_extend` advanced its write cursor by `grain_len - splice_len`, which is exactly zero at the default 15 ms grain size -- the writer never moved.
+
+- Four saturating fixes in `cdp_granular_ext.c` where `write_pos += g->length - splice_len` could underflow a `size_t` and skip the rest of the output.
+
+- The WAV reader validated the audio format and bit depth but trusted every other header field. A `fmt ` chunk declaring zero channels made the frame size zero and the frame-count division an integer division by zero -- SIGFPE on x86-64, which kills the process; `cdp_buffer_create` rejects zero channels, but one line too late. A declared `data` size larger than the file turned four bytes into an arbitrary allocation (a 100-byte file requesting 4 GB). An absurd-but-positive sample rate survived into every downstream operation, where delay lines and output lengths scale with it. Channel count, sample rate and chunk size are now bounded against the file.
+
+- Chunk skipping used `fseek(f, (long)chunk_size, SEEK_CUR)`. `long` is 32-bit on Windows, so a chunk declaring more than `LONG_MAX` bytes cast to a negative offset and seeked backwards, leaving the chunk scan re-reading the same bytes forever.
+
+- Heap-buffer-overflow in the reverb delay lines at low sample rates. Their length is scaled by `sample_rate / 44100`, so below roughly 800 Hz every Freeverb tuning constant rounds down to zero frames; `calloc(0, n)` returns a non-NULL zero-byte allocation and `comb_process` then reads `buffer[0]` from it. Confirmed with AddressSanitizer, which reports it at `cdp_reverb.c:comb_process`.
+
+- The output conversion copied `lib_buf.length` samples into a buffer sized `(length / channels) * channels`. For a length that is not a whole number of frames those differ, and the copy ran past the end of the destination.
+
+- Writing a buffer containing NaN was undefined behaviour. The PCM converters clamp with `if (v > 1.0f)` / `if (v < -1.0f)`, both false for NaN, so it reached the float-to-integer cast. NaN is written as silence and the infinities clamp to full scale; the float32 path still round-trips them, since the format can represent them.
+
+- The WAV writers truncated the data size to 32 bits without checking, so a buffer above roughly one billion samples produced a corrupt file and a zero exit status. They now refuse.
+
+- Each thread's processing context is freed when the thread exits, via a pthread key destructor (FLS on Windows). A plain thread-local pointer has no such hook and the context was never released: 528 bytes retained for the life of the process, once per thread that ever called in. The header described this as "bounded by thread count", which holds only for a fixed pool -- a thread-per-request server accumulated ~2 MB per 3,000 threads with no limit. `cycdp.release_thread_context()` releases it early for a long-lived thread that is done.
+
+- `cycdp.version()` reported the C library's own hardcoded string, which had drifted to `0.1.0` while the package was `0.2.0`. It is now defined by CMake from the project version, and `__version__` comes from the installed distribution rather than a third literal. A test asserts the two agree; the previous test only checked the string was semver-shaped, which could not catch it.
+
+- `buf[-1]` now means the last sample. The index was typed `size_t`, so a negative value raised `OverflowError` from the argument conversion rather than wrapping the way every other Python sequence does.
+
+- A bare `Buffer()` passed to a processing function reported "Output buffer has invalid channel count" from deep in the C layer. It now says the input buffer is not initialised.
+
+- `Buffer.__getbuffer__` ignored its `flags` argument and always advertised `format`, `shape` and `strides`. An exporter is required to fill in what the consumer asked for and no more: a consumer requesting `PyBUF_SIMPLE` was handed fields it had declared no interest in, and a non-NULL `format` contradicts the itemsize such a consumer is entitled to assume, since a NULL format means unsigned bytes. The field layout now follows CPython's own `PyBuffer_FillInfo`. Nothing can fail -- the memory is contiguous, so every contiguity flag is satisfiable, and always writable, so `PyBUF_WRITABLE` never needs refusing. `memoryview`, `bytes()`, `array.array` and numpy all ask for everything, so the common paths were never affected and are covered by tests to keep it that way.
+
+### Removed
+
+- `cdp_shim.c` and `cdp_io_redirect.c` are no longer compiled -- roughly 750 lines of dead object code that had been linked into every wheel. They implement an approach that was tried and set aside: a fake `sfsys` that would let unmodified CDP program sources run against memory buffers, by `#define`-ing `fgetfbufEx` and the other soundfile entry points to wrappers over a slot table of in-memory "files" (`cdp_sfsys_shim.h`). Had it worked, all ~500 CDP programs would have become available by compiling them rather than rewriting them. Intercepting I/O turned out to be necessary but nowhere near sufficient -- CDP algorithms are `main()` programs with command-line parsing and extensive global state -- so every operation here is an independent port instead, and nothing ever called the shim.
+
+  Leaving it in the build was not harmless. Its state is process-global by design, faithfully mirroring the CDP programs it was meant to host, and the processing paths release the GIL: the first call into it would have reintroduced a data race the per-thread context work exists to prevent. `tests/test_concurrency.py::test_shim_is_not_compiled` now fails if either file returns to `CDP_LIB_SOURCES`, alongside the existing check that nothing calls into them.
+
+  The files stay in the tree as the record of the approach, with the rationale and the obstacles written up in the header comment of `cdp_shim.h`. Reviving the path means solving the hosting problem first; the right ownership model for the slot table follows from that rather than preceding it.
+
+  `errstr`, the diagnostic buffer the vendored FFT writes to, moved from `cdp_shim.c` to `cdp_lib.c`. It was the one symbol in the shim the build actually needed, and defining it here avoids another local divergence from upstream `mxfft.c`.
+
+### Changed
+
+- The C library is compiled with `-Wall -Wextra`. Only the Cython extension had warnings enabled; the 23,000 lines of C where every one of the crashes above lives were built at the compiler's defaults. Turning them on cost nine fixes, all unused variables and one dead function -- and one of them, `write_pos` in `cdp_granular_ext.c`, marked a genuinely dead computation. `CYCDP_WERROR=ON` makes them errors, which CI uses; it is scoped to the hand-written sources, since the Cython-generated C emits sign-compare warnings that are not ours to fix.
+
+- The extension is built with hidden symbol visibility. It exported 199 symbols including `errstr`, `fft_`, `fftmx` and `reals_` -- generic names from the vendored FFT that also exist in FFTPACK-derived libraries. It now exports only `PyInit__core`.
+
+- The per-operation epilogue in `_core.pyx` is a shared helper. Ninety functions repeated the same seven lines -- free the input, translate a NULL result, take ownership of the output -- which is ninety chances to get the ordering wrong, and it had been wrong before: the 0.2.0 ownership fix had to be applied to ninety-seven sites individually. The file is 300 lines shorter.
+
+- `license` is a PEP 639 SPDX expression, and the wheel now carries `LICENSE` and a new `projects/libcdp/NOTICE`. LGPL 2.1 section 6 wants the corresponding source to accompany the object code; the wheel statically links `mxfft.c`, which is Copyright (c) 1983-2023 Trevor Wishart and Composers Desktop Project Ltd. `NOTICE` names the copyright holders and says where the source is.
+
+- The CLI rejects `nan` and `inf` as a usage error at parse time rather than passing them to the library.
+
+- Buffer conversion uses `memcpy` in place of two element-wise loops.
+
+### Added
+
+- `scripts/fuzz_api.py` and the `fuzz` CI job. The suite and the sanitizer jobs both only ever exercise the library with well-formed input, so between them they validated it against exactly the inputs it was designed for. The harness drives every public function's every parameter with NaN, Inf and absurd magnitudes, each call in its own subprocess because the failures it looks for are signals and infinite loops rather than exceptions. It runs under AddressSanitizer in CI, where an out-of-bounds read becomes a precise report. `make fuzz` runs it locally.
+
+- `tests/test_dsp_families.py`: measured behaviour for the six operation families where "correct" can be stated exactly -- synthesis, analysis, phase, spatial, envelope and morphing. Twelve families previously had nothing beyond the cheap invariants, so an operation could return the wrong frequency and the suite would stay green. These assert the harmonic series each waveform is named for, that pitch tracking returns the pitch, that inversion is exact negation, that panning hard left leaves the right channel silent, that tremolo at 5 Hz modulates at 5 Hz, and that a morph's endpoints are its inputs. Behavioural coverage goes from 21 of 133 operations to 46. Writing them is what found the two phase-vocoder defects above.
+
+  Four defects they surfaced but did not fix are recorded as strict xfails rather than omitted, so that fixing one fails the suite and forces the marker off:
+
+  - `spectral_shift` shifts in the wrong direction and loses the energy. A +100 Hz shift of a 440 Hz tone peaks at 340 Hz at 7% of the input level; -100 Hz peaks at 540. Past about two bins nothing coherent survives, with RMS down from 0.345 to 0.030.
+
+  - `spectral_stretch` has the same root cause: a 2x stretch of a 2000 Hz tone leaves the peak at 1930 Hz and destroys 87% of the energy. Both rewrite each bin's stored frequency in place while leaving its amplitude in the original bin, so a frequency the analysis never produced decoheres across the overlap-add rather than relocating. Fixing them means moving amplitude/frequency pairs to the destination bin, and settling the sign convention between the analysis `atan2` and the synthesis -- self-consistent for an unmodified spectrum, which is why the inversion only appears once an offset is added. The operations that interpolate or average analysed spectra (morph, blur, cross-synthesis) stay within the range of values the analysis produced and are unaffected.
+
+  - `morph_glide` and `morph_glide_native` deliver about a quarter of the requested duration.
+
+  - `get_partials` remains biased on an isolated low tone (200 Hz reads as ~231) while being accurate on harmonic content.
+
+- `tests/test_invariants.py`: properties applied to every operation rather than to a chosen few. No output sample may be NaN or infinite, no output may be absurdly loud, silence in must give silence out (with each exception listing its reason), and a seeded operation must be reproducible. The operation table is built by introspecting the type stubs, so a new operation is covered without anyone remembering to add it. Most operations previously had only "the result has a nonzero length" asserted about them.
+
+- `scripts/check_validation.py` and a `validation-check` make target, wired into `make qa` and CI.
+
+- `cycdp.release_thread_context()`.
+
+- Regression tests for every crash and hang above, including crafted WAV headers and the reverb's zero-length delay lines.
+
+### Documentation
+
+- The Architecture section of the README described a data path that does not exist. It presented `cdp_lib` as "wrapper modules that call into original CDP8 algorithm code" relying on a shim layer to intercept `sfsys` file I/O. No compiled file includes `sfsys.h`; `cdp_sfsys_shim.h` is included by nothing; no `cdp_io_*` symbol is referenced outside its own translation unit; and the only upstream CDP8 source compiled into the extension is the FFT. Every algorithm is an independent port. The project already knew this -- `tests/test_concurrency.py::test_shim_remains_unreachable` asserts it and `DEV_GUIDE.md` describes the porting workflow correctly -- but the public README had not been updated. This matters beyond tidiness: provenance is the main reason to choose cycdp, and a reader was being told the original algorithms were running.
+
+- The "zero-copy interop" design principle claimed data passes between Python and C without copying. Reading a result out is zero-copy; input is copied once into library-owned memory. Restated, with the actual cost.
+
+- The `*_native` morph functions were documented as "using original CDP algorithm". They are ports of `dev/morph/morph.c` running on this library's own analysis and synthesis, which is what the source file's own header comment says.
+
 ## [0.2.0]
 
 ### Fixed

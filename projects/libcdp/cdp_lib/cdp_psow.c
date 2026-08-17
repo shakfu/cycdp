@@ -20,6 +20,10 @@
  */
 static int find_pitch_periods(const float* data, size_t length, int sample_rate,
                                size_t** periods, size_t* period_count) {
+    /* Unused for now: the bound below assumes 44.1 kHz rather than deriving
+     * the shortest plausible period from sample_rate. Kept in the signature
+     * because that is the fix, and callers already pass it. */
+    (void)sample_rate;
     /* Estimate maximum number of periods (assume min period of ~50 samples at 44.1kHz) */
     size_t max_periods = length / 50 + 100;
     *periods = (size_t*)malloc(max_periods * sizeof(size_t));
@@ -594,7 +598,6 @@ cdp_lib_buffer* cdp_lib_psow_interp(cdp_lib_ctx* ctx,
     }
 
     /* Interpolation section */
-    size_t interp_start = out_pos;
     size_t steps = interp_samples / ((len1 + len2) / 2);
     if (steps < 2) steps = 2;
 

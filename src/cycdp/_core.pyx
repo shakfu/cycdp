@@ -11,8 +11,8 @@ numpy, array.array, and other buffer-compatible objects.
 from libc.stddef cimport size_t
 from libc.stdlib cimport malloc, free
 from libc.string cimport memcpy
-from cpython.buffer cimport PyBUF_FORMAT, PyBUF_WRITABLE
-from cpython.mem cimport PyMem_Malloc, PyMem_Free
+# Used by Buffer.__getbuffer__ to honour what the consumer actually asked for.
+from cpython.buffer cimport PyBUF_FORMAT, PyBUF_ND, PyBUF_STRIDES
 
 # =============================================================================
 # C declarations from cdp.h
@@ -158,6 +158,94 @@ class CDPError(Exception):
         super().__init__(f"CDP error {code}: {message}")
 
 
+# =============================================================================
+# Parameter validation
+# =============================================================================
+#
+# Every public function checks each of its floating-point parameters for
+# finiteness before doing anything else. This is not defensive padding: NaN and
+# Inf reach C as-is, where `(size_t)nan` is undefined behaviour, every
+# comparison-based clamp (`if (x < 0) x = 0;`) silently passes them through, and
+# the result is an out-of-bounds read or a loop that never terminates.
+#
+# Fuzzing the API before these guards existed produced four hard crashes
+# (SIGSEGV/SIGBUS in drunk, grain_cloud, crystal, wrappage) and thirteen hangs,
+# all reachable from ordinary Python and from the `cycdp` CLI, which accepts
+# "nan" and "inf" for any float option because argparse does.
+#
+# The checks are generated: scripts/check_validation.py fails if a public
+# function has a `double` parameter with no corresponding `_finite()` call, so
+# a new operation cannot be added without one.
+#
+# _finite() is the universal guard. _in_range() adds an upper bound for the
+# parameters that scale an allocation or a loop count, where an unbounded but
+# finite value is just as damaging -- those are listed per function rather than
+# guessed from a naming convention, and each limit is stated in the docstring.
+
+from libc.math cimport isfinite
+
+# Shared limits for the bounded parameters. These are deliberately generous --
+# far beyond any musically useful setting -- because their job is to convert an
+# absurd request into an immediate ValueError, not to police taste. A one-hour
+# ceiling on output length still permits every realistic use while capping the
+# implied allocation at roughly 600 MB of float32 per channel.
+DEF MAX_DURATION_S = 3600.0        # output length or position, in seconds
+DEF MAX_TIME_MS = 3600000.0        # the same ceiling expressed in milliseconds
+DEF MIN_GRAIN_MS = 0.01            # 10 us; below this the grain count explodes
+DEF MAX_GRAIN_MS = 10000.0
+DEF MAX_DENSITY = 10000.0          # grains or events per second
+DEF MIN_FACTOR = 0.001             # time-scaling multipliers
+DEF MAX_FACTOR = 1000.0
+
+
+cdef inline int _finite(double value, str name) except -1:
+    """Reject NaN and +/-Inf for a floating-point parameter."""
+    if not isfinite(value):
+        raise ValueError(f"{name} must be a finite number, got {value!r}")
+    return 0
+
+
+cdef inline int _in_range(double value, str name,
+                          double low, double high) except -1:
+    """Reject a non-finite or out-of-range parameter.
+
+    Used where the value scales an output allocation or an iteration count, so
+    that an absurd request fails immediately with a clear message instead of
+    exhausting memory or spinning inside the C layer.
+    """
+    if not isfinite(value):
+        raise ValueError(f"{name} must be a finite number, got {value!r}")
+    if value < low or value > high:
+        raise ValueError(
+            f"{name} must be between {low:g} and {high:g}, got {value!r}"
+        )
+    return 0
+
+
+cdef inline int _at_most(double value, str name, double high) except -1:
+    """Reject a non-finite parameter, or one above `high`.
+
+    Used where the function already has its own lower-bound check with a more
+    specific message: this adds only the missing ceiling, so the existing check
+    keeps producing the error for values it already covered.
+    """
+    if not isfinite(value):
+        raise ValueError(f"{name} must be a finite number, got {value!r}")
+    if value > high:
+        raise ValueError(f"{name} must not exceed {high:g}, got {value!r}")
+    return 0
+
+
+cdef inline int _int_in_range(long long value, str name,
+                              long long low, long long high) except -1:
+    """Reject an integer parameter that scales an allocation or a loop count."""
+    if value < low or value > high:
+        raise ValueError(
+            f"{name} must be between {low} and {high}, got {value}"
+        )
+    return 0
+
+
 cpdef str version():
     """Get CDP library version string."""
     return cdp_version().decode('utf-8')
@@ -281,7 +369,21 @@ cdef class Buffer:
         return (<char*>self._buf.samples)[:nbytes]
 
     def __getbuffer__(self, Py_buffer *buffer, int flags):
-        """Support buffer protocol for zero-copy access."""
+        """Export the samples through the buffer protocol.
+
+        `flags` states what the consumer needs, and an exporter is required to
+        fill in that and no more: `format`, `shape` and `strides` must be NULL
+        when they were not requested. This used to advertise all three
+        unconditionally, so a consumer asking for PyBUF_SIMPLE was handed
+        fields it had declared no interest in -- and in the case of `format`,
+        one that contradicts the itemsize it is entitled to assume, since a
+        NULL format means unsigned bytes.
+
+        Nothing here can fail. The memory is contiguous, so every contiguity
+        flag is satisfiable, and it is always writable, so PyBUF_WRITABLE never
+        needs refusing; there is deliberately no BufferError path. The field
+        layout follows CPython's own PyBuffer_FillInfo.
+        """
         if self._buf is NULL:
             raise ValueError("Buffer is not initialized")
 
@@ -289,16 +391,30 @@ cdef class Buffer:
         self._strides[0] = <Py_ssize_t>sizeof(float)
 
         buffer.buf = <void*>self._buf.samples
-        buffer.format = 'f'  # float32
         buffer.internal = NULL
         buffer.itemsize = sizeof(float)
         buffer.len = self._buf.sample_count * sizeof(float)
         buffer.ndim = 1
         buffer.obj = self
         buffer.readonly = 0  # Always writable since we own the memory
-        buffer.shape = self._shape
-        buffer.strides = self._strides
-        buffer.suboffsets = NULL
+        buffer.suboffsets = NULL  # contiguous, never indirect
+
+        if (flags & PyBUF_FORMAT) == PyBUF_FORMAT:
+            buffer.format = 'f'  # float32
+        else:
+            buffer.format = NULL
+
+        if (flags & PyBUF_ND) == PyBUF_ND:
+            buffer.shape = self._shape
+        else:
+            buffer.shape = NULL
+
+        # PyBUF_STRIDES implies PyBUF_ND. Omitting strides is only correct for
+        # a C-contiguous exporter, which this is.
+        if (flags & PyBUF_STRIDES) == PyBUF_STRIDES:
+            buffer.strides = self._strides
+        else:
+            buffer.strides = NULL
 
     def __releasebuffer__(self, Py_buffer *buffer):
         pass
@@ -332,19 +448,33 @@ cdef class Buffer:
             return 0
         return self._buf.sample_count
 
-    def __getitem__(self, size_t index):
-        if self._buf is NULL:
-            raise ValueError("Buffer is not initialized")
-        if index >= self._buf.sample_count:
-            raise IndexError("Index out of range")
-        return self._buf.samples[index]
+    cdef size_t _resolve_index(self, Py_ssize_t index) except? 0:
+        """Bounds-check an index, wrapping negatives from the end.
 
-    def __setitem__(self, size_t index, float value):
+        The index used to be typed size_t, so buf[-1] raised OverflowError
+        from the argument conversion instead of returning the last sample --
+        the one indexing convention every Python sequence shares. Callers who
+        wanted the tail had to write buf[len(buf) - 1].
+        """
         if self._buf is NULL:
             raise ValueError("Buffer is not initialized")
-        if index >= self._buf.sample_count:
+        cdef Py_ssize_t count = <Py_ssize_t>self._buf.sample_count
+        if index < 0:
+            index += count
+        if index < 0 or index >= count:
             raise IndexError("Index out of range")
-        self._buf.samples[index] = value
+        return <size_t>index
+
+    def __getitem__(self, Py_ssize_t index):
+        # Resolve into a local first: _resolve_index is what rejects an
+        # uninitialised buffer, and evaluating self._buf.samples in the same
+        # expression would dereference NULL before that check could run.
+        cdef size_t at = self._resolve_index(index)
+        return self._buf.samples[at]
+
+    def __setitem__(self, Py_ssize_t index, float value):
+        cdef size_t at = self._resolve_index(index)
+        self._buf.samples[at] = value
 
     def clear(self):
         """Set all samples to zero."""
@@ -362,6 +492,7 @@ cdef class Buffer:
 
 def apply_gain(Context ctx, Buffer buf, double gain, bint clip=False):
     """Apply gain to buffer (in-place)."""
+    _finite(gain, "gain")
     cdef cdp_flags flags = CDP_FLAG_CLIP if clip else CDP_FLAG_NONE
     cdef cdp_error err = cdp_gain(ctx.ptr(), buf.ptr(), gain, flags)
     ctx._check_error(err)
@@ -369,6 +500,7 @@ def apply_gain(Context ctx, Buffer buf, double gain, bint clip=False):
 
 def apply_gain_db(Context ctx, Buffer buf, double gain_db, bint clip=False):
     """Apply gain in dB to buffer (in-place)."""
+    _finite(gain_db, "gain_db")
     cdef cdp_flags flags = CDP_FLAG_CLIP if clip else CDP_FLAG_NONE
     cdef cdp_error err = cdp_gain_db(ctx.ptr(), buf.ptr(), gain_db, flags)
     ctx._check_error(err)
@@ -376,12 +508,14 @@ def apply_gain_db(Context ctx, Buffer buf, double gain_db, bint clip=False):
 
 def apply_normalize(Context ctx, Buffer buf, double target_level=1.0):
     """Normalize buffer to target level (in-place)."""
+    _finite(target_level, "target_level")
     cdef cdp_error err = cdp_normalize(ctx.ptr(), buf.ptr(), target_level)
     ctx._check_error(err)
 
 
 def apply_normalize_db(Context ctx, Buffer buf, double target_db=0.0):
     """Normalize buffer to target dB level (in-place)."""
+    _finite(target_db, "target_db")
     cdef cdp_error err = cdp_normalize_db(ctx.ptr(), buf.ptr(), target_db)
     ctx._check_error(err)
 
@@ -418,6 +552,7 @@ def gain(float[::1] samples not None, double gain_factor=1.0,
     Returns:
         Buffer with processed samples (supports buffer protocol).
     """
+    _finite(gain_factor, "gain_factor")
     cdef Context ctx = Context()
     cdef Buffer buf = Buffer.from_memoryview(samples, 1, sample_rate)
 
@@ -438,6 +573,7 @@ def gain_db(float[::1] samples not None, double db=0.0,
     Returns:
         Buffer with processed samples.
     """
+    _finite(db, "db")
     cdef Context ctx = Context()
     cdef Buffer buf = Buffer.from_memoryview(samples, 1, sample_rate)
 
@@ -460,6 +596,7 @@ def normalize(float[::1] samples not None, double target=1.0,
     Raises:
         CDPError: If audio is silent.
     """
+    _finite(target, "target")
     cdef Context ctx = Context()
     cdef Buffer buf = Buffer.from_memoryview(samples, 1, sample_rate)
 
@@ -479,6 +616,7 @@ def normalize_db(float[::1] samples not None, double target_db=0.0,
     Returns:
         Buffer with normalized samples.
     """
+    _finite(target_db, "target_db")
     cdef Context ctx = Context()
     cdef Buffer buf = Buffer.from_memoryview(samples, 1, sample_rate)
 
@@ -589,6 +727,7 @@ def pan(Buffer buf not None, double position=0.0):
     Raises:
         CDPError: If input is not mono.
     """
+    _finite(position, "position")
     cdef Context ctx = Context()
     cdef cdp_buffer* c_result = cdp_pan(ctx.ptr(), buf.ptr(), position)
 
@@ -686,6 +825,7 @@ def narrow(Buffer buf not None, double width=1.0):
     Raises:
         CDPError: If input is not stereo or width is negative.
     """
+    _finite(width, "width")
     cdef Context ctx = Context()
     cdef cdp_buffer* c_result = cdp_narrow(ctx.ptr(), buf.ptr(), width)
 
@@ -718,6 +858,8 @@ def mix2(Buffer a not None, Buffer b not None, double gain_a=1.0, double gain_b=
     Raises:
         CDPError: If buffers are incompatible.
     """
+    _finite(gain_a, "gain_a")
+    _finite(gain_b, "gain_b")
     cdef Context ctx = Context()
     cdef cdp_buffer* c_result = cdp_mix2(ctx.ptr(), a.ptr(), b.ptr(), gain_a, gain_b)
 
@@ -829,6 +971,7 @@ def fade_in(Buffer buf not None, double duration, str curve="linear"):
     Raises:
         ValueError: If curve type is invalid.
     """
+    _in_range(duration, "duration", 0.0, MAX_DURATION_S)
     cdef int fade_type
     if curve == "linear":
         fade_type = 0
@@ -857,6 +1000,7 @@ def fade_out(Buffer buf not None, double duration, str curve="linear"):
     Raises:
         ValueError: If curve type is invalid.
     """
+    _in_range(duration, "duration", 0.0, MAX_DURATION_S)
     cdef int fade_type
     if curve == "linear":
         fade_type = 0
@@ -1114,6 +1258,7 @@ cdef extern from "cdp_lib.h" nogil:
 
     cdp_lib_ctx* cdp_lib_init()
     cdp_lib_ctx* cdp_lib_thread_ctx()
+    void cdp_lib_release_thread_ctx()
     void cdp_lib_cleanup(cdp_lib_ctx* ctx)
     const char* cdp_lib_get_error(cdp_lib_ctx* ctx)
 
@@ -1275,7 +1420,7 @@ cdef extern from "cdp_lib.h" nogil:
                                          int fft_size)
 
 cdef extern from "cdp_morph_native.h" nogil:
-    # Native morph wrappers (original CDP algorithms)
+    # Morph algorithms ported from CDP's morph.c (specglide/bridge/morph)
     cdp_lib_buffer* cdp_morph_glide_native(cdp_lib_ctx* ctx,
                                             const cdp_lib_buffer* input1,
                                             const cdp_lib_buffer* input2,
@@ -1934,6 +2079,8 @@ cdef cdp_lib_ctx* _get_cdp_lib_ctx() except NULL:
     every call writes ctx->error_msg and draws from ctx->prng_state. Sharing
     one context across threads would let concurrent operations corrupt each
     other's error reporting and consume each other's seeded random stream.
+
+    The context is freed when the thread exits; see release_thread_context().
     """
     cdef cdp_lib_ctx* ctx
     with nogil:
@@ -1943,17 +2090,40 @@ cdef cdp_lib_ctx* _get_cdp_lib_ctx() except NULL:
     return ctx
 
 
+def release_thread_context():
+    """Free this thread's processing context now.
+
+    Rarely needed: each thread's context (about 528 bytes) is released
+    automatically when the thread exits. Call this from a long-lived thread
+    that has finished with cycdp and will not call it again, or before a
+    thread is parked indefinitely.
+
+    Safe to call when no context exists and safe to call repeatedly; the next
+    processing call on this thread allocates a fresh one. Note that the fresh
+    context re-seeds its PRNG, so an unseeded random operation will not
+    continue the previous stream.
+    """
+    with nogil:
+        cdp_lib_release_thread_ctx()
+
+
 cdef cdp_lib_buffer* _buffer_to_cdp_lib(Buffer buf) except NULL:
     """Convert a cycdp Buffer to a cdp_lib_buffer."""
+    # A bare Buffer() has no allocation. Rejecting it here names the problem;
+    # letting it through produced "Output buffer has invalid channel count"
+    # from somewhere deep in the C layer, which describes neither the cause
+    # nor the argument at fault.
+    if buf._buf is NULL:
+        raise ValueError("Buffer is not initialized")
+
     cdef cdp_lib_buffer* lib_buf = cdp_lib_buffer_create(
-        buf.sample_count, buf.channels, buf.sample_rate)
+        buf._buf.sample_count, buf._buf.info.channels, buf._buf.info.sample_rate)
     if lib_buf is NULL:
         raise MemoryError("Failed to create CDP library buffer")
 
-    # Copy data
-    cdef size_t i
-    for i in range(buf.sample_count):
-        lib_buf.data[i] = buf._buf.samples[i]
+    if buf._buf.sample_count:
+        memcpy(lib_buf.data, buf._buf.samples,
+               buf._buf.sample_count * sizeof(float))
 
     return lib_buf
 
@@ -1988,7 +2158,6 @@ cdef Buffer _take_cdp_lib_buffer(cdp_lib_buffer* lib_buf):
     Pass ownership and do not free the pointer afterwards.
     """
     cdef Buffer result
-    cdef size_t i
     try:
         if lib_buf is NULL:
             raise CDPError(-1, "No output buffer produced")
@@ -2000,13 +2169,46 @@ cdef Buffer _take_cdp_lib_buffer(cdp_lib_buffer* lib_buf):
             lib_buf.channels,
             lib_buf.sample_rate)
 
-        # Copy data
-        for i in range(lib_buf.length):
-            result._buf.samples[i] = lib_buf.data[i]
+        # Buffer.create rounds the frame count down, so copy what it actually
+        # allocated rather than lib_buf.length: for a length that is not a
+        # whole number of frames those differ, and the old element-wise loop
+        # ran to lib_buf.length regardless.
+        if result._buf.sample_count:
+            memcpy(result._buf.samples, lib_buf.data,
+                   result._buf.sample_count * sizeof(float))
 
         return result
     finally:
         cdp_lib_buffer_free(lib_buf)
+
+
+cdef Buffer _finish(cdp_lib_ctx* ctx, cdp_lib_buffer* input_buf,
+                    cdp_lib_buffer* output_buf, str failure):
+    """Release the input, translate a NULL output, and take ownership of it.
+
+    Every operation ends the same way -- free the converted input, raise
+    CDPError with the context's message if the C call returned NULL, hand the
+    output to a Buffer. That epilogue was written out by hand at ninety-odd
+    call sites, which is ninety-odd chances to get the ordering wrong. It had
+    been wrong before: the free-the-output-on-conversion-failure fix in 0.2.0
+    had to be applied to ninety-seven sites individually.
+
+    `failure` is the fallback message used when the C layer returned NULL
+    without setting one.
+    """
+    cdp_lib_buffer_free(input_buf)
+    if output_buf is NULL:
+        error_msg = cdp_lib_get_error(ctx)
+        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else failure)
+    return _take_cdp_lib_buffer(output_buf)
+
+
+cdef Buffer _finish2(cdp_lib_ctx* ctx,
+                     cdp_lib_buffer* first, cdp_lib_buffer* second,
+                     cdp_lib_buffer* output_buf, str failure):
+    """_finish for the two-input operations (morph, cross-synthesis, ...)."""
+    cdp_lib_buffer_free(first)
+    return _finish(ctx, second, output_buf, failure)
 
 
 def time_stretch(Buffer buf not None, double factor, int fft_size=1024, int overlap=3):
@@ -2027,6 +2229,7 @@ def time_stretch(Buffer buf not None, double factor, int fft_size=1024, int over
     Raises:
         CDPError: If processing fails.
     """
+    _at_most(factor, "factor", MAX_FACTOR)
     if factor <= 0:
         raise ValueError("Stretch factor must be positive")
 
@@ -2038,15 +2241,7 @@ def time_stretch(Buffer buf not None, double factor, int fft_size=1024, int over
         output_buf = cdp_lib_time_stretch(
             ctx, input_buf, factor, fft_size, overlap)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Time stretch failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Time stretch failed")
 
 
 def spectral_blur(Buffer buf not None, double blur_time, int fft_size=1024):
@@ -2066,6 +2261,7 @@ def spectral_blur(Buffer buf not None, double blur_time, int fft_size=1024):
     Raises:
         CDPError: If processing fails.
     """
+    _in_range(blur_time, "blur_time", 0.0, MAX_DURATION_S)
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -2074,15 +2270,7 @@ def spectral_blur(Buffer buf not None, double blur_time, int fft_size=1024):
         output_buf = cdp_lib_spectral_blur(
             ctx, input_buf, blur_time, fft_size)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Spectral blur failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Spectral blur failed")
 
 
 def modify_speed(Buffer buf not None, double speed_factor):
@@ -2101,6 +2289,7 @@ def modify_speed(Buffer buf not None, double speed_factor):
     Raises:
         CDPError: If processing fails.
     """
+    _at_most(speed_factor, "speed_factor", MAX_FACTOR)
     if speed_factor <= 0:
         raise ValueError("Speed factor must be positive")
 
@@ -2111,15 +2300,7 @@ def modify_speed(Buffer buf not None, double speed_factor):
     with nogil:
         output_buf = cdp_lib_speed(ctx, input_buf, speed_factor)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Speed change failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Speed change failed")
 
 
 # =============================================================================
@@ -2140,6 +2321,7 @@ def pitch_shift(Buffer buf not None, double semitones, int fft_size=1024):
     Raises:
         CDPError: If processing fails.
     """
+    _finite(semitones, "semitones")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -2147,21 +2329,17 @@ def pitch_shift(Buffer buf not None, double semitones, int fft_size=1024):
     with nogil:
         output_buf = cdp_lib_pitch_shift(ctx, input_buf, semitones, fft_size)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Pitch shift failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Pitch shift failed")
 
 
 def spectral_shift(Buffer buf not None, double shift_hz, int fft_size=1024):
     """Shift all frequencies by a fixed Hz offset (native implementation).
 
     Unlike pitch shift, this adds a constant Hz value, creating inharmonic effects.
+
+    Because the offset is constant in Hz rather than a ratio, harmonic input
+    comes out inharmonic: 400 and 800 Hz shifted by 100 become 500 and 900, not
+    500 and 1000. Use pitch_shift for a musical transposition.
 
     Args:
         buf: Input Buffer.
@@ -2174,6 +2352,7 @@ def spectral_shift(Buffer buf not None, double shift_hz, int fft_size=1024):
     Raises:
         CDPError: If processing fails.
     """
+    _finite(shift_hz, "shift_hz")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -2181,15 +2360,7 @@ def spectral_shift(Buffer buf not None, double shift_hz, int fft_size=1024):
     with nogil:
         output_buf = cdp_lib_spectral_shift(ctx, input_buf, shift_hz, fft_size)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Spectral shift failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Spectral shift failed")
 
 
 def spectral_stretch(Buffer buf not None, double max_stretch,
@@ -2197,6 +2368,12 @@ def spectral_stretch(Buffer buf not None, double max_stretch,
     """Stretch frequencies differentially (native implementation).
 
     Higher frequencies get stretched more, creating inharmonic effects.
+
+    max_stretch is the ratio applied at Nyquist, not everywhere: the factor
+    rises from 1.0 at freq_divide to max_stretch at Nyquist, along the curve
+    set by exponent. With freq_divide 1000 and max_stretch 2.0 at a 44100 Hz
+    rate, a partial at 2 kHz moves to about 2.1 kHz and one at 11 kHz to about
+    16 kHz.
 
     Args:
         buf: Input Buffer.
@@ -2211,6 +2388,9 @@ def spectral_stretch(Buffer buf not None, double max_stretch,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(max_stretch, "max_stretch")
+    _finite(freq_divide, "freq_divide")
+    _finite(exponent, "exponent")
     if max_stretch <= 0:
         raise ValueError("max_stretch must be positive")
 
@@ -2222,15 +2402,7 @@ def spectral_stretch(Buffer buf not None, double max_stretch,
         output_buf = cdp_lib_spectral_stretch(
             ctx, input_buf, max_stretch, freq_divide, exponent, fft_size)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Spectral stretch failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Spectral stretch failed")
 
 
 def filter_lowpass(Buffer buf not None, double cutoff_freq,
@@ -2249,6 +2421,8 @@ def filter_lowpass(Buffer buf not None, double cutoff_freq,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(cutoff_freq, "cutoff_freq")
+    _finite(attenuation_db, "attenuation_db")
     if cutoff_freq <= 0:
         raise ValueError("cutoff_freq must be positive")
 
@@ -2260,15 +2434,7 @@ def filter_lowpass(Buffer buf not None, double cutoff_freq,
         output_buf = cdp_lib_filter_lowpass(
             ctx, input_buf, cutoff_freq, attenuation_db, fft_size)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Lowpass filter failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Lowpass filter failed")
 
 
 def filter_highpass(Buffer buf not None, double cutoff_freq,
@@ -2287,6 +2453,8 @@ def filter_highpass(Buffer buf not None, double cutoff_freq,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(cutoff_freq, "cutoff_freq")
+    _finite(attenuation_db, "attenuation_db")
     if cutoff_freq <= 0:
         raise ValueError("cutoff_freq must be positive")
 
@@ -2298,15 +2466,7 @@ def filter_highpass(Buffer buf not None, double cutoff_freq,
         output_buf = cdp_lib_filter_highpass(
             ctx, input_buf, cutoff_freq, attenuation_db, fft_size)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Highpass filter failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Highpass filter failed")
 
 
 def filter_bandpass(Buffer buf not None, double low_freq, double high_freq,
@@ -2326,6 +2486,9 @@ def filter_bandpass(Buffer buf not None, double low_freq, double high_freq,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(low_freq, "low_freq")
+    _finite(high_freq, "high_freq")
+    _finite(attenuation_db, "attenuation_db")
     if low_freq <= 0:
         raise ValueError("low_freq must be positive")
     if high_freq <= low_freq:
@@ -2339,15 +2502,7 @@ def filter_bandpass(Buffer buf not None, double low_freq, double high_freq,
         output_buf = cdp_lib_filter_bandpass(
             ctx, input_buf, low_freq, high_freq, attenuation_db, fft_size)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Bandpass filter failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Bandpass filter failed")
 
 
 def filter_notch(Buffer buf not None, double center_freq, double width_hz,
@@ -2367,6 +2522,9 @@ def filter_notch(Buffer buf not None, double center_freq, double width_hz,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(center_freq, "center_freq")
+    _finite(width_hz, "width_hz")
+    _finite(attenuation_db, "attenuation_db")
     if center_freq <= 0:
         raise ValueError("center_freq must be positive")
     if width_hz <= 0:
@@ -2380,15 +2538,7 @@ def filter_notch(Buffer buf not None, double center_freq, double width_hz,
         output_buf = cdp_lib_filter_notch(
             ctx, input_buf, center_freq, width_hz, attenuation_db, fft_size)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Notch filter failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Notch filter failed")
 
 
 def gate(Buffer buf not None, double threshold_db, double attack_ms=1.0,
@@ -2410,6 +2560,10 @@ def gate(Buffer buf not None, double threshold_db, double attack_ms=1.0,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(threshold_db, "threshold_db")
+    _in_range(attack_ms, "attack_ms", 0.0, MAX_TIME_MS)
+    _in_range(release_ms, "release_ms", 0.0, MAX_TIME_MS)
+    _in_range(hold_ms, "hold_ms", 0.0, MAX_TIME_MS)
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -2418,15 +2572,7 @@ def gate(Buffer buf not None, double threshold_db, double attack_ms=1.0,
         output_buf = cdp_lib_gate(
             ctx, input_buf, threshold_db, attack_ms, release_ms, hold_ms)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Gate failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Gate failed")
 
 
 def bitcrush(Buffer buf not None, int bit_depth=8, int downsample=1):
@@ -2458,15 +2604,7 @@ def bitcrush(Buffer buf not None, int bit_depth=8, int downsample=1):
         output_buf = cdp_lib_bitcrush(
             ctx, input_buf, bit_depth, downsample)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Bitcrush failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Bitcrush failed")
 
 
 def ring_mod(Buffer buf not None, double freq, double mix=1.0):
@@ -2485,6 +2623,8 @@ def ring_mod(Buffer buf not None, double freq, double mix=1.0):
     Raises:
         CDPError: If processing fails.
     """
+    _finite(freq, "freq")
+    _finite(mix, "mix")
     if freq <= 0:
         raise ValueError("freq must be positive")
     if mix < 0 or mix > 1:
@@ -2497,15 +2637,7 @@ def ring_mod(Buffer buf not None, double freq, double mix=1.0):
     with nogil:
         output_buf = cdp_lib_ring_mod(ctx, input_buf, freq, mix)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Ring modulation failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Ring modulation failed")
 
 
 def delay(Buffer buf not None, double delay_ms, double feedback=0.3, double mix=0.5):
@@ -2523,6 +2655,9 @@ def delay(Buffer buf not None, double delay_ms, double feedback=0.3, double mix=
     Raises:
         CDPError: If processing fails.
     """
+    _at_most(delay_ms, "delay_ms", MAX_TIME_MS)
+    _finite(feedback, "feedback")
+    _finite(mix, "mix")
     if delay_ms <= 0:
         raise ValueError("delay_ms must be positive")
     if feedback < 0 or feedback >= 1:
@@ -2537,15 +2672,7 @@ def delay(Buffer buf not None, double delay_ms, double feedback=0.3, double mix=
     with nogil:
         output_buf = cdp_lib_delay(ctx, input_buf, delay_ms, feedback, mix)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Delay failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Delay failed")
 
 
 def chorus(Buffer buf not None, double rate=1.5, double depth_ms=5.0, double mix=0.5):
@@ -2565,6 +2692,9 @@ def chorus(Buffer buf not None, double rate=1.5, double depth_ms=5.0, double mix
     Raises:
         CDPError: If processing fails.
     """
+    _finite(rate, "rate")
+    _at_most(depth_ms, "depth_ms", MAX_TIME_MS)
+    _finite(mix, "mix")
     if rate <= 0:
         raise ValueError("rate must be positive")
     if depth_ms <= 0:
@@ -2579,15 +2709,7 @@ def chorus(Buffer buf not None, double rate=1.5, double depth_ms=5.0, double mix
     with nogil:
         output_buf = cdp_lib_chorus(ctx, input_buf, rate, depth_ms, mix)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Chorus failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Chorus failed")
 
 
 def flanger(Buffer buf not None, double rate=0.5, double depth_ms=3.0,
@@ -2609,6 +2731,10 @@ def flanger(Buffer buf not None, double rate=0.5, double depth_ms=3.0,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(rate, "rate")
+    _at_most(depth_ms, "depth_ms", MAX_TIME_MS)
+    _finite(feedback, "feedback")
+    _finite(mix, "mix")
     if rate <= 0:
         raise ValueError("rate must be positive")
     if depth_ms <= 0:
@@ -2626,15 +2752,7 @@ def flanger(Buffer buf not None, double rate=0.5, double depth_ms=3.0,
         output_buf = cdp_lib_flanger(
             ctx, input_buf, rate, depth_ms, feedback, mix)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Flanger failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Flanger failed")
 
 
 # =============================================================================
@@ -2660,6 +2778,9 @@ def eq_parametric(Buffer buf not None, double center_freq, double gain_db,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(center_freq, "center_freq")
+    _finite(gain_db, "gain_db")
+    _finite(q, "q")
     if center_freq <= 0:
         raise ValueError("center_freq must be positive")
     if q <= 0:
@@ -2673,15 +2794,7 @@ def eq_parametric(Buffer buf not None, double center_freq, double gain_db,
         output_buf = cdp_lib_eq_parametric(
             ctx, input_buf, center_freq, gain_db, q, fft_size)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Parametric EQ failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Parametric EQ failed")
 
 
 def envelope_follow(Buffer buf not None, double attack_ms=10.0,
@@ -2702,6 +2815,8 @@ def envelope_follow(Buffer buf not None, double attack_ms=10.0,
     Raises:
         CDPError: If processing fails.
     """
+    _at_most(attack_ms, "attack_ms", MAX_TIME_MS)
+    _at_most(release_ms, "release_ms", MAX_TIME_MS)
     if attack_ms < 0:
         raise ValueError("attack_ms must be non-negative")
     if release_ms < 0:
@@ -2717,15 +2832,7 @@ def envelope_follow(Buffer buf not None, double attack_ms=10.0,
         output_buf = cdp_lib_envelope_follow(
             ctx, input_buf, attack_ms, release_ms, mode_int)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Envelope follow failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Envelope follow failed")
 
 
 def envelope_apply(Buffer buf not None, Buffer envelope not None, double depth=1.0):
@@ -2744,6 +2851,7 @@ def envelope_apply(Buffer buf not None, Buffer envelope not None, double depth=1
     Raises:
         CDPError: If processing fails.
     """
+    _finite(depth, "depth")
     if depth < 0 or depth > 1:
         raise ValueError("depth must be 0.0 to 1.0")
 
@@ -2757,16 +2865,7 @@ def envelope_apply(Buffer buf not None, Buffer envelope not None, double depth=1
         output_buf = cdp_lib_envelope_apply(
             ctx, input_buf, env_buf, depth)
 
-    cdp_lib_buffer_free(input_buf)
-    cdp_lib_buffer_free(env_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Envelope apply failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish2(ctx, input_buf, env_buf, output_buf, "Envelope apply failed")
 
 
 def compressor(Buffer buf not None, double threshold_db=-20.0, double ratio=4.0,
@@ -2789,6 +2888,11 @@ def compressor(Buffer buf not None, double threshold_db=-20.0, double ratio=4.0,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(threshold_db, "threshold_db")
+    _finite(ratio, "ratio")
+    _at_most(attack_ms, "attack_ms", MAX_TIME_MS)
+    _at_most(release_ms, "release_ms", MAX_TIME_MS)
+    _finite(makeup_gain_db, "makeup_gain_db")
     if ratio < 1.0:
         raise ValueError("ratio must be >= 1.0")
     if attack_ms < 0:
@@ -2804,15 +2908,7 @@ def compressor(Buffer buf not None, double threshold_db=-20.0, double ratio=4.0,
         output_buf = cdp_lib_compressor(
             ctx, input_buf, threshold_db, ratio, attack_ms, release_ms, makeup_gain_db)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Compressor failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Compressor failed")
 
 
 def limiter(Buffer buf not None, double threshold_db=-0.1,
@@ -2833,6 +2929,9 @@ def limiter(Buffer buf not None, double threshold_db=-0.1,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(threshold_db, "threshold_db")
+    _at_most(attack_ms, "attack_ms", MAX_TIME_MS)
+    _at_most(release_ms, "release_ms", MAX_TIME_MS)
     if attack_ms < 0:
         raise ValueError("attack_ms must be non-negative")
     if release_ms < 0:
@@ -2846,15 +2945,7 @@ def limiter(Buffer buf not None, double threshold_db=-0.1,
         output_buf = cdp_lib_limiter(
             ctx, input_buf, threshold_db, attack_ms, release_ms)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Limiter failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Limiter failed")
 
 
 # =============================================================================
@@ -2878,6 +2969,8 @@ def dovetail(Buffer buf not None, double fade_in_dur, double fade_out_dur,
         CDPError: If processing fails.
         ValueError: If fade_type is invalid.
     """
+    _in_range(fade_in_dur, "fade_in_dur", 0.0, MAX_DURATION_S)
+    _in_range(fade_out_dur, "fade_out_dur", 0.0, MAX_DURATION_S)
     cdef int fade_in_type, fade_out_type
 
     if fade_type == "linear":
@@ -2897,15 +2990,7 @@ def dovetail(Buffer buf not None, double fade_in_dur, double fade_out_dur,
         output_buf = cdp_lib_dovetail(
             ctx, input_buf, fade_in_dur, fade_out_dur, fade_in_type, fade_out_type)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Dovetail failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Dovetail failed")
 
 
 def tremolo(Buffer buf not None, double freq, double depth, double gain=1.0):
@@ -2923,6 +3008,9 @@ def tremolo(Buffer buf not None, double freq, double depth, double gain=1.0):
     Raises:
         CDPError: If processing fails.
     """
+    _finite(freq, "freq")
+    _finite(depth, "depth")
+    _finite(gain, "gain")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -2930,15 +3018,7 @@ def tremolo(Buffer buf not None, double freq, double depth, double gain=1.0):
     with nogil:
         output_buf = cdp_lib_tremolo(ctx, input_buf, freq, depth, gain)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Tremolo failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Tremolo failed")
 
 
 def attack(Buffer buf not None, double attack_gain, double attack_time):
@@ -2955,6 +3035,8 @@ def attack(Buffer buf not None, double attack_gain, double attack_time):
     Raises:
         CDPError: If processing fails.
     """
+    _finite(attack_gain, "attack_gain")
+    _in_range(attack_time, "attack_time", 0.0, MAX_DURATION_S)
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -2962,15 +3044,7 @@ def attack(Buffer buf not None, double attack_gain, double attack_time):
     with nogil:
         output_buf = cdp_lib_attack(ctx, input_buf, attack_gain, attack_time)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Attack modification failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Attack modification failed")
 
 
 # =============================================================================
@@ -2991,6 +3065,8 @@ def distort_overload(Buffer buf not None, double clip_level, double depth=0.5):
     Raises:
         CDPError: If processing fails.
     """
+    _finite(clip_level, "clip_level")
+    _finite(depth, "depth")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -2998,15 +3074,7 @@ def distort_overload(Buffer buf not None, double clip_level, double depth=0.5):
     with nogil:
         output_buf = cdp_lib_distort_overload(ctx, input_buf, clip_level, depth)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Distort overload failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Distort overload failed")
 
 
 def distort_reverse(Buffer buf not None, int cycle_count):
@@ -3029,15 +3097,7 @@ def distort_reverse(Buffer buf not None, int cycle_count):
     with nogil:
         output_buf = cdp_lib_distort_reverse(ctx, input_buf, cycle_count)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Distort reverse failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Distort reverse failed")
 
 
 def distort_fractal(Buffer buf not None, double scaling, double loudness=1.0):
@@ -3056,6 +3116,8 @@ def distort_fractal(Buffer buf not None, double scaling, double loudness=1.0):
     Raises:
         CDPError: If processing fails.
     """
+    _finite(scaling, "scaling")
+    _finite(loudness, "loudness")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -3063,15 +3125,7 @@ def distort_fractal(Buffer buf not None, double scaling, double loudness=1.0):
     with nogil:
         output_buf = cdp_lib_distort_fractal(ctx, input_buf, scaling, loudness)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Distort fractal failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Distort fractal failed")
 
 
 def distort_shuffle(Buffer buf not None, int chunk_count, unsigned int seed=0):
@@ -3095,15 +3149,7 @@ def distort_shuffle(Buffer buf not None, int chunk_count, unsigned int seed=0):
     with nogil:
         output_buf = cdp_lib_distort_shuffle(ctx, input_buf, chunk_count, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Distort shuffle failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Distort shuffle failed")
 
 
 def distort_cut(Buffer buf not None, int cycle_count=4, int cycle_step=4,
@@ -3131,6 +3177,8 @@ def distort_cut(Buffer buf not None, int cycle_count=4, int cycle_step=4,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(exponent, "exponent")
+    _finite(min_level, "min_level")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -3140,15 +3188,7 @@ def distort_cut(Buffer buf not None, int cycle_count=4, int cycle_step=4,
             ctx, input_buf, cycle_count, cycle_step, exponent, min_level
         )
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Distort cut failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Distort cut failed")
 
 
 def distort_mark(Buffer buf not None, markers not None, double unit_ms=10.0,
@@ -3176,6 +3216,9 @@ def distort_mark(Buffer buf not None, markers not None, double unit_ms=10.0,
     Raises:
         CDPError: If processing fails.
     """
+    _in_range(unit_ms, "unit_ms", 0.01, MAX_GRAIN_MS)
+    _finite(stretch, "stretch")
+    _finite(random, "random")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -3198,15 +3241,7 @@ def distort_mark(Buffer buf not None, markers not None, double unit_ms=10.0,
         )
 
     free(marker_array)
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Distort mark failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Distort mark failed")
 
 
 def distort_repeat(Buffer buf not None, int multiplier=2, int cycle_count=1,
@@ -3232,6 +3267,7 @@ def distort_repeat(Buffer buf not None, int multiplier=2, int cycle_count=1,
     Raises:
         CDPError: If processing fails.
     """
+    _in_range(splice_ms, "splice_ms", 0.0, MAX_TIME_MS)
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -3241,15 +3277,7 @@ def distort_repeat(Buffer buf not None, int multiplier=2, int cycle_count=1,
             ctx, input_buf, multiplier, cycle_count, skip_cycles, splice_ms, mode
         )
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Distort repeat failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Distort repeat failed")
 
 
 def distort_shift(Buffer buf not None, int group_size=1, int shift=1, int mode=0):
@@ -3281,15 +3309,7 @@ def distort_shift(Buffer buf not None, int group_size=1, int shift=1, int mode=0
             ctx, input_buf, group_size, shift, mode
         )
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Distort shift failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Distort shift failed")
 
 
 def distort_warp(Buffer buf not None, double warp=0.001, int mode=0, int waveset_count=1):
@@ -3314,6 +3334,7 @@ def distort_warp(Buffer buf not None, double warp=0.001, int mode=0, int waveset
     Raises:
         CDPError: If processing fails.
     """
+    _finite(warp, "warp")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -3323,15 +3344,7 @@ def distort_warp(Buffer buf not None, double warp=0.001, int mode=0, int waveset
             ctx, input_buf, warp, mode, waveset_count
         )
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Distort warp failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Distort warp failed")
 
 
 # =============================================================================
@@ -3358,6 +3371,11 @@ def reverb(Buffer buf not None, double mix=0.5, double decay_time=2.0,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(mix, "mix")
+    _in_range(decay_time, "decay_time", 0.0, MAX_DURATION_S)
+    _finite(damping, "damping")
+    _finite(lpfreq, "lpfreq")
+    _finite(predelay, "predelay")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -3366,15 +3384,7 @@ def reverb(Buffer buf not None, double mix=0.5, double decay_time=2.0,
         output_buf = cdp_lib_reverb(
             ctx, input_buf, mix, decay_time, damping, lpfreq, predelay)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Reverb failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Reverb failed")
 
 
 # =============================================================================
@@ -3405,6 +3415,12 @@ def brassage(Buffer buf not None, double velocity=1.0, double density=1.0,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(velocity, "velocity")
+    _in_range(density, "density", 0.0, MAX_DENSITY)
+    _in_range(grainsize_ms, "grainsize_ms", MIN_GRAIN_MS, MAX_GRAIN_MS)
+    _finite(scatter, "scatter")
+    _finite(pitch_shift, "pitch_shift")
+    _finite(amp_variation, "amp_variation")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -3414,15 +3430,7 @@ def brassage(Buffer buf not None, double velocity=1.0, double density=1.0,
             ctx, input_buf, velocity, density, grainsize_ms,
             scatter, pitch_shift, amp_variation, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Brassage failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Brassage failed")
 
 
 def freeze(Buffer buf not None, double start_time, double end_time,
@@ -3451,6 +3459,14 @@ def freeze(Buffer buf not None, double start_time, double end_time,
     Raises:
         CDPError: If processing fails.
     """
+    _in_range(start_time, "start_time", 0.0, MAX_DURATION_S)
+    _at_most(end_time, "end_time", MAX_DURATION_S)
+    _at_most(duration, "duration", MAX_DURATION_S)
+    _in_range(delay, "delay", 0.0, MAX_DURATION_S)
+    _finite(randomize, "randomize")
+    _in_range(pitch_scatter, "pitch_scatter", 0.0, 120.0)
+    _finite(amp_cut, "amp_cut")
+    _finite(gain, "gain")
     if end_time <= start_time:
         raise ValueError("end_time must be greater than start_time")
     if duration <= 0:
@@ -3465,15 +3481,7 @@ def freeze(Buffer buf not None, double start_time, double end_time,
             ctx, input_buf, start_time, end_time, duration,
             delay, randomize, pitch_scatter, amp_cut, gain, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Freeze failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Freeze failed")
 
 
 def grain_cloud(Buffer buf not None, double gate=0.1, double grainsize_ms=50.0,
@@ -3499,6 +3507,11 @@ def grain_cloud(Buffer buf not None, double gate=0.1, double grainsize_ms=50.0,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(gate, "gate")
+    _in_range(grainsize_ms, "grainsize_ms", MIN_GRAIN_MS, MAX_GRAIN_MS)
+    _in_range(density, "density", 0.0, MAX_DENSITY)
+    _in_range(duration, "duration", 0.0, MAX_DURATION_S)
+    _finite(scatter, "scatter")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -3507,15 +3520,7 @@ def grain_cloud(Buffer buf not None, double gate=0.1, double grainsize_ms=50.0,
         output_buf = cdp_lib_grain_cloud(
             ctx, input_buf, gate, grainsize_ms, density, duration, scatter, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Grain cloud failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Grain cloud failed")
 
 
 def grain_extend(Buffer buf not None, double grainsize_ms=15.0, double trough=0.3,
@@ -3541,6 +3546,11 @@ def grain_extend(Buffer buf not None, double grainsize_ms=15.0, double trough=0.
     Raises:
         CDPError: If processing fails.
     """
+    _in_range(grainsize_ms, "grainsize_ms", MIN_GRAIN_MS, MAX_GRAIN_MS)
+    _finite(trough, "trough")
+    _in_range(extension, "extension", 0.0, MAX_DURATION_S)
+    _in_range(start_time, "start_time", 0.0, MAX_DURATION_S)
+    _in_range(end_time, "end_time", 0.0, MAX_DURATION_S)
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -3549,15 +3559,7 @@ def grain_extend(Buffer buf not None, double grainsize_ms=15.0, double trough=0.
         output_buf = cdp_lib_grain_extend(
             ctx, input_buf, grainsize_ms, trough, extension, start_time, end_time, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Grain extend failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Grain extend failed")
 
 
 def texture_simple(Buffer buf not None, double duration=5.0, double density=5.0,
@@ -3583,6 +3585,11 @@ def texture_simple(Buffer buf not None, double duration=5.0, double density=5.0,
     Raises:
         CDPError: If processing fails.
     """
+    _in_range(duration, "duration", 0.0, MAX_DURATION_S)
+    _in_range(density, "density", 0.0, MAX_DENSITY)
+    _finite(pitch_range, "pitch_range")
+    _finite(amp_range, "amp_range")
+    _finite(spatial_range, "spatial_range")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -3591,15 +3598,7 @@ def texture_simple(Buffer buf not None, double duration=5.0, double density=5.0,
         output_buf = cdp_lib_texture_simple(
             ctx, input_buf, duration, density, pitch_range, amp_range, spatial_range, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Texture simple failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Texture simple failed")
 
 
 def texture_multi(Buffer buf not None, double duration=5.0, double density=2.0,
@@ -3627,6 +3626,12 @@ def texture_multi(Buffer buf not None, double duration=5.0, double density=2.0,
     Raises:
         CDPError: If processing fails.
     """
+    _in_range(duration, "duration", 0.0, MAX_DURATION_S)
+    _in_range(density, "density", 0.0, MAX_DENSITY)
+    _finite(group_spread, "group_spread")
+    _finite(pitch_range, "pitch_range")
+    _finite(pitch_center, "pitch_center")
+    _finite(amp_decay, "amp_decay")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -3636,15 +3641,7 @@ def texture_multi(Buffer buf not None, double duration=5.0, double density=2.0,
             ctx, input_buf, duration, density, group_size, group_spread,
             pitch_range, pitch_center, amp_decay, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Texture multi failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Texture multi failed")
 
 
 # =============================================================================
@@ -3671,6 +3668,8 @@ def grain_reorder(Buffer buf not None, order=None, double gate=0.1,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(gate, "gate")
+    _in_range(grainsize_ms, "grainsize_ms", MIN_GRAIN_MS, MAX_GRAIN_MS)
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -3693,15 +3692,7 @@ def grain_reorder(Buffer buf not None, order=None, double gate=0.1,
         output_buf = cdp_lib_grain_reorder(
             ctx, input_buf, order_ptr, order_count, gate, grainsize_ms, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Grain reorder failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Grain reorder failed")
 
 
 def grain_rerhythm(Buffer buf not None, times=None, ratios=None,
@@ -3726,6 +3717,8 @@ def grain_rerhythm(Buffer buf not None, times=None, ratios=None,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(gate, "gate")
+    _in_range(grainsize_ms, "grainsize_ms", MIN_GRAIN_MS, MAX_GRAIN_MS)
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -3758,15 +3751,7 @@ def grain_rerhythm(Buffer buf not None, times=None, ratios=None,
             ctx, input_buf, times_ptr, time_count, ratios_ptr, ratio_count,
             gate, grainsize_ms, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Grain rerhythm failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Grain rerhythm failed")
 
 
 def grain_reverse(Buffer buf not None, double gate=0.1, double grainsize_ms=50.0):
@@ -3786,6 +3771,8 @@ def grain_reverse(Buffer buf not None, double gate=0.1, double grainsize_ms=50.0
     Raises:
         CDPError: If processing fails.
     """
+    _finite(gate, "gate")
+    _in_range(grainsize_ms, "grainsize_ms", MIN_GRAIN_MS, MAX_GRAIN_MS)
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -3794,15 +3781,7 @@ def grain_reverse(Buffer buf not None, double gate=0.1, double grainsize_ms=50.0
         output_buf = cdp_lib_grain_reverse(
             ctx, input_buf, gate, grainsize_ms)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Grain reverse failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Grain reverse failed")
 
 
 def grain_timewarp(Buffer buf not None, double stretch=1.0, stretch_curve=None,
@@ -3825,6 +3804,9 @@ def grain_timewarp(Buffer buf not None, double stretch=1.0, stretch_curve=None,
     Raises:
         CDPError: If processing fails.
     """
+    _in_range(stretch, "stretch", MIN_FACTOR, MAX_FACTOR)
+    _finite(gate, "gate")
+    _in_range(grainsize_ms, "grainsize_ms", MIN_GRAIN_MS, MAX_GRAIN_MS)
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -3850,15 +3832,7 @@ def grain_timewarp(Buffer buf not None, double stretch=1.0, stretch_curve=None,
         output_buf = cdp_lib_grain_timewarp(
             ctx, input_buf, stretch, curve_ptr, curve_points, gate, grainsize_ms)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Grain timewarp failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Grain timewarp failed")
 
 
 def grain_repitch(Buffer buf not None, double pitch_semitones=0.0, pitch_curve=None,
@@ -3881,6 +3855,9 @@ def grain_repitch(Buffer buf not None, double pitch_semitones=0.0, pitch_curve=N
     Raises:
         CDPError: If processing fails.
     """
+    _finite(pitch_semitones, "pitch_semitones")
+    _finite(gate, "gate")
+    _in_range(grainsize_ms, "grainsize_ms", MIN_GRAIN_MS, MAX_GRAIN_MS)
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -3905,15 +3882,7 @@ def grain_repitch(Buffer buf not None, double pitch_semitones=0.0, pitch_curve=N
         output_buf = cdp_lib_grain_repitch(
             ctx, input_buf, pitch_semitones, curve_ptr, curve_points, gate, grainsize_ms)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Grain repitch failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Grain repitch failed")
 
 
 def grain_position(Buffer buf not None, positions=None, double duration=0.0,
@@ -3935,6 +3904,9 @@ def grain_position(Buffer buf not None, positions=None, double duration=0.0,
     Raises:
         CDPError: If processing fails.
     """
+    _in_range(duration, "duration", 0.0, MAX_DURATION_S)
+    _finite(gate, "gate")
+    _in_range(grainsize_ms, "grainsize_ms", MIN_GRAIN_MS, MAX_GRAIN_MS)
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -3956,15 +3928,7 @@ def grain_position(Buffer buf not None, positions=None, double duration=0.0,
         output_buf = cdp_lib_grain_position(
             ctx, input_buf, pos_ptr, pos_count, duration, gate, grainsize_ms)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Grain position failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Grain position failed")
 
 
 def grain_omit(Buffer buf not None, int keep=1, int out_of=2,
@@ -3988,6 +3952,8 @@ def grain_omit(Buffer buf not None, int keep=1, int out_of=2,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(gate, "gate")
+    _in_range(grainsize_ms, "grainsize_ms", MIN_GRAIN_MS, MAX_GRAIN_MS)
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -3996,15 +3962,7 @@ def grain_omit(Buffer buf not None, int keep=1, int out_of=2,
         output_buf = cdp_lib_grain_omit(
             ctx, input_buf, keep, out_of, gate, grainsize_ms, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Grain omit failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Grain omit failed")
 
 
 def grain_duplicate(Buffer buf not None, int repeats=2,
@@ -4027,6 +3985,8 @@ def grain_duplicate(Buffer buf not None, int repeats=2,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(gate, "gate")
+    _in_range(grainsize_ms, "grainsize_ms", MIN_GRAIN_MS, MAX_GRAIN_MS)
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -4035,15 +3995,7 @@ def grain_duplicate(Buffer buf not None, int repeats=2,
         output_buf = cdp_lib_grain_duplicate(
             ctx, input_buf, repeats, gate, grainsize_ms, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Grain duplicate failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Grain duplicate failed")
 
 
 # =============================================================================
@@ -4070,6 +4022,9 @@ def spectral_focus(Buffer buf not None, double center_freq=1000.0,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(center_freq, "center_freq")
+    _finite(bandwidth, "bandwidth")
+    _finite(gain_db, "gain_db")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -4078,15 +4033,7 @@ def spectral_focus(Buffer buf not None, double center_freq=1000.0,
         output_buf = cdp_lib_spectral_focus(
             ctx, input_buf, center_freq, bandwidth, gain_db, fft_size)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Spectral focus failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Spectral focus failed")
 
 
 def spectral_hilite(Buffer buf not None, double threshold_db=-20.0,
@@ -4108,6 +4055,8 @@ def spectral_hilite(Buffer buf not None, double threshold_db=-20.0,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(threshold_db, "threshold_db")
+    _finite(boost_db, "boost_db")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -4116,15 +4065,7 @@ def spectral_hilite(Buffer buf not None, double threshold_db=-20.0,
         output_buf = cdp_lib_spectral_hilite(
             ctx, input_buf, threshold_db, boost_db, fft_size)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Spectral hilite failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Spectral hilite failed")
 
 
 def spectral_fold(Buffer buf not None, double fold_freq=2000.0, int fft_size=1024):
@@ -4144,6 +4085,7 @@ def spectral_fold(Buffer buf not None, double fold_freq=2000.0, int fft_size=102
     Raises:
         CDPError: If processing fails.
     """
+    _finite(fold_freq, "fold_freq")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -4152,15 +4094,7 @@ def spectral_fold(Buffer buf not None, double fold_freq=2000.0, int fft_size=102
         output_buf = cdp_lib_spectral_fold(
             ctx, input_buf, fold_freq, fft_size)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Spectral fold failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Spectral fold failed")
 
 
 def spectral_clean(Buffer buf not None, double threshold_db=-40.0, int fft_size=1024):
@@ -4180,6 +4114,7 @@ def spectral_clean(Buffer buf not None, double threshold_db=-40.0, int fft_size=
     Raises:
         CDPError: If processing fails.
     """
+    _finite(threshold_db, "threshold_db")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -4188,15 +4123,7 @@ def spectral_clean(Buffer buf not None, double threshold_db=-40.0, int fft_size=
         output_buf = cdp_lib_spectral_clean(
             ctx, input_buf, threshold_db, fft_size)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Spectral clean failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Spectral clean failed")
 
 
 # =============================================================================
@@ -4223,6 +4150,8 @@ def strange(Buffer buf not None, double chaos_amount=0.5, double rate=2.0,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(chaos_amount, "chaos_amount")
+    _finite(rate, "rate")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -4231,15 +4160,7 @@ def strange(Buffer buf not None, double chaos_amount=0.5, double rate=2.0,
         output_buf = cdp_lib_strange(
             ctx, input_buf, chaos_amount, rate, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Strange modulation failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Strange modulation failed")
 
 
 def brownian(Buffer buf not None, double step_size=0.1, double smoothing=0.9,
@@ -4262,6 +4183,8 @@ def brownian(Buffer buf not None, double step_size=0.1, double smoothing=0.9,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(step_size, "step_size")
+    _finite(smoothing, "smoothing")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -4270,15 +4193,7 @@ def brownian(Buffer buf not None, double step_size=0.1, double smoothing=0.9,
         output_buf = cdp_lib_brownian(
             ctx, input_buf, step_size, smoothing, target, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Brownian modulation failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Brownian modulation failed")
 
 
 def crystal(Buffer buf not None, double density=50.0, double decay=0.5,
@@ -4301,6 +4216,9 @@ def crystal(Buffer buf not None, double density=50.0, double decay=0.5,
     Raises:
         CDPError: If processing fails.
     """
+    _in_range(density, "density", 0.0, MAX_DENSITY)
+    _in_range(decay, "decay", 0.0, MAX_DURATION_S)
+    _in_range(pitch_scatter, "pitch_scatter", 0.0, 120.0)
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -4309,15 +4227,7 @@ def crystal(Buffer buf not None, double density=50.0, double decay=0.5,
         output_buf = cdp_lib_crystal(
             ctx, input_buf, density, decay, pitch_scatter, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Crystal texture failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Crystal texture failed")
 
 
 def fractal(Buffer buf not None, int depth=3, double pitch_ratio=0.5,
@@ -4340,6 +4250,8 @@ def fractal(Buffer buf not None, int depth=3, double pitch_ratio=0.5,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(pitch_ratio, "pitch_ratio")
+    _finite(decay, "decay")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -4348,15 +4260,7 @@ def fractal(Buffer buf not None, int depth=3, double pitch_ratio=0.5,
         output_buf = cdp_lib_fractal(
             ctx, input_buf, depth, pitch_ratio, decay, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Fractal processing failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Fractal processing failed")
 
 
 def quirk(Buffer buf not None, double probability=0.3, double intensity=0.5,
@@ -4379,6 +4283,8 @@ def quirk(Buffer buf not None, double probability=0.3, double intensity=0.5,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(probability, "probability")
+    _finite(intensity, "intensity")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -4387,15 +4293,7 @@ def quirk(Buffer buf not None, double probability=0.3, double intensity=0.5,
         output_buf = cdp_lib_quirk(
             ctx, input_buf, probability, intensity, mode, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Quirk processing failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Quirk processing failed")
 
 
 def chirikov(Buffer buf not None, double k_param=2.0, double mod_depth=0.5,
@@ -4419,6 +4317,9 @@ def chirikov(Buffer buf not None, double k_param=2.0, double mod_depth=0.5,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(k_param, "k_param")
+    _finite(mod_depth, "mod_depth")
+    _finite(rate, "rate")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -4427,15 +4328,7 @@ def chirikov(Buffer buf not None, double k_param=2.0, double mod_depth=0.5,
         output_buf = cdp_lib_chirikov(
             ctx, input_buf, k_param, mod_depth, rate, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Chirikov modulation failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Chirikov modulation failed")
 
 
 def cantor(Buffer buf not None, int depth=4, double duty_cycle=0.5,
@@ -4458,6 +4351,8 @@ def cantor(Buffer buf not None, int depth=4, double duty_cycle=0.5,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(duty_cycle, "duty_cycle")
+    _in_range(smooth_ms, "smooth_ms", 0.0, MAX_TIME_MS)
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -4466,15 +4361,7 @@ def cantor(Buffer buf not None, int depth=4, double duty_cycle=0.5,
         output_buf = cdp_lib_cantor(
             ctx, input_buf, depth, duty_cycle, smooth_ms, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Cantor gating failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Cantor gating failed")
 
 
 def cascade(Buffer buf not None, int num_echoes=6, double delay_ms=100.0,
@@ -4500,6 +4387,10 @@ def cascade(Buffer buf not None, int num_echoes=6, double delay_ms=100.0,
     Raises:
         CDPError: If processing fails.
     """
+    _in_range(delay_ms, "delay_ms", 0.0, MAX_TIME_MS)
+    _in_range(pitch_decay, "pitch_decay", 0.01, 100.0)
+    _finite(amp_decay, "amp_decay")
+    _finite(filter_decay, "filter_decay")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -4508,15 +4399,7 @@ def cascade(Buffer buf not None, int num_echoes=6, double delay_ms=100.0,
         output_buf = cdp_lib_cascade(
             ctx, input_buf, num_echoes, delay_ms, pitch_decay, amp_decay, filter_decay, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Cascade processing failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Cascade processing failed")
 
 
 def fracture(Buffer buf not None, double fragment_ms=50.0, double gap_ratio=0.5,
@@ -4539,6 +4422,9 @@ def fracture(Buffer buf not None, double fragment_ms=50.0, double gap_ratio=0.5,
     Raises:
         CDPError: If processing fails.
     """
+    _in_range(fragment_ms, "fragment_ms", MIN_GRAIN_MS, MAX_GRAIN_MS)
+    _finite(gap_ratio, "gap_ratio")
+    _finite(scatter, "scatter")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -4547,15 +4433,7 @@ def fracture(Buffer buf not None, double fragment_ms=50.0, double gap_ratio=0.5,
         output_buf = cdp_lib_fracture(
             ctx, input_buf, fragment_ms, gap_ratio, scatter, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Fracture processing failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Fracture processing failed")
 
 
 def tesselate(Buffer buf not None, double tile_ms=50.0, int pattern=1,
@@ -4579,6 +4457,9 @@ def tesselate(Buffer buf not None, double tile_ms=50.0, int pattern=1,
     Raises:
         CDPError: If processing fails.
     """
+    _in_range(tile_ms, "tile_ms", MIN_GRAIN_MS, MAX_GRAIN_MS)
+    _finite(overlap, "overlap")
+    _finite(transform, "transform")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -4587,15 +4468,7 @@ def tesselate(Buffer buf not None, double tile_ms=50.0, int pattern=1,
         output_buf = cdp_lib_tesselate(
             ctx, input_buf, tile_ms, pattern, overlap, transform, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Tesselate processing failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Tesselate processing failed")
 
 
 def morph(Buffer buf1 not None, Buffer buf2 not None,
@@ -4620,6 +4493,9 @@ def morph(Buffer buf1 not None, Buffer buf2 not None,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(morph_start, "morph_start")
+    _finite(morph_end, "morph_end")
+    _finite(exponent, "exponent")
     if buf1.sample_rate != buf2.sample_rate:
         raise ValueError("Sample rates must match for morphing")
 
@@ -4633,16 +4509,7 @@ def morph(Buffer buf1 not None, Buffer buf2 not None,
         output_buf = cdp_lib_morph(
             ctx, input1_buf, input2_buf, morph_start, morph_end, exponent, fft_size)
 
-    cdp_lib_buffer_free(input1_buf)
-    cdp_lib_buffer_free(input2_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Morph failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish2(ctx, input1_buf, input2_buf, output_buf, "Morph failed")
 
 
 def morph_glide(Buffer buf1 not None, Buffer buf2 not None,
@@ -4663,6 +4530,7 @@ def morph_glide(Buffer buf1 not None, Buffer buf2 not None,
     Raises:
         CDPError: If processing fails.
     """
+    _in_range(duration, "duration", 0.0, MAX_DURATION_S)
     if buf1.sample_rate != buf2.sample_rate:
         raise ValueError("Sample rates must match for glide")
 
@@ -4676,16 +4544,7 @@ def morph_glide(Buffer buf1 not None, Buffer buf2 not None,
         output_buf = cdp_lib_morph_glide(
             ctx, input1_buf, input2_buf, duration, fft_size)
 
-    cdp_lib_buffer_free(input1_buf)
-    cdp_lib_buffer_free(input2_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Morph glide failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish2(ctx, input1_buf, input2_buf, output_buf, "Morph glide failed")
 
 
 def cross_synth(Buffer buf1 not None, Buffer buf2 not None,
@@ -4706,6 +4565,7 @@ def cross_synth(Buffer buf1 not None, Buffer buf2 not None,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(mix, "mix")
     if buf1.sample_rate != buf2.sample_rate:
         raise ValueError("Sample rates must match for cross-synthesis")
 
@@ -4719,25 +4579,22 @@ def cross_synth(Buffer buf1 not None, Buffer buf2 not None,
         output_buf = cdp_lib_cross_synth(
             ctx, input1_buf, input2_buf, mode, mix, fft_size)
 
-    cdp_lib_buffer_free(input1_buf)
-    cdp_lib_buffer_free(input2_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Cross-synthesis failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish2(ctx, input1_buf, input2_buf, output_buf, "Cross-synthesis failed")
 
 
 # =============================================================================
-# Native morph functions (original CDP algorithms)
+# Morph functions ported from CDP's dev/morph/morph.c.
+#
+# The `_native` suffix distinguishes these from the simpler `morph`/
+# `morph_glide` above: they follow the structure of the corresponding CDP
+# program rather than a generic spectral interpolation. They are still
+# ports running on this library's own analysis/synthesis, not the original
+# code -- see the Architecture section of the README.
 # =============================================================================
 
 def morph_glide_native(Buffer buf1 not None, Buffer buf2 not None,
                        double duration=1.0, int fft_size=1024):
-    """Spectral glide using original CDP algorithm (CDP: SPECGLIDE).
+    """Spectral glide, ported from CDP's specglide.
 
     Creates a smooth glide between two spectral frames - one from each input.
     The original algorithm reads single windows from each file and interpolates
@@ -4755,6 +4612,7 @@ def morph_glide_native(Buffer buf1 not None, Buffer buf2 not None,
     Raises:
         CDPError: If processing fails.
     """
+    _in_range(duration, "duration", 0.0, MAX_DURATION_S)
     if buf1.sample_rate != buf2.sample_rate:
         raise ValueError("Sample rates must match for glide")
 
@@ -4766,23 +4624,14 @@ def morph_glide_native(Buffer buf1 not None, Buffer buf2 not None,
     cdef cdp_lib_buffer* output_buf = cdp_morph_glide_native(
         ctx, input1_buf, input2_buf, duration, fft_size)
 
-    cdp_lib_buffer_free(input1_buf)
-    cdp_lib_buffer_free(input2_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Native morph glide failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish2(ctx, input1_buf, input2_buf, output_buf, "Native morph glide failed")
 
 
 def morph_bridge_native(Buffer buf1 not None, Buffer buf2 not None,
                         int mode=0, double offset=0.0,
                         double interp_start=0.0, double interp_end=1.0,
                         int fft_size=1024):
-    """Spectral bridge using original CDP algorithm (CDP: SPECBRIDGE).
+    """Spectral bridge, ported from CDP's specbridge.
 
     Creates a bridge (crossfade) between two spectral files with control over
     normalization mode and interpolation timing.
@@ -4808,6 +4657,9 @@ def morph_bridge_native(Buffer buf1 not None, Buffer buf2 not None,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(offset, "offset")
+    _finite(interp_start, "interp_start")
+    _finite(interp_end, "interp_end")
     if buf1.sample_rate != buf2.sample_rate:
         raise ValueError("Sample rates must match for bridge")
 
@@ -4819,16 +4671,7 @@ def morph_bridge_native(Buffer buf1 not None, Buffer buf2 not None,
     cdef cdp_lib_buffer* output_buf = cdp_morph_bridge_native(
         ctx, input1_buf, input2_buf, mode, offset, interp_start, interp_end, fft_size)
 
-    cdp_lib_buffer_free(input1_buf)
-    cdp_lib_buffer_free(input2_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Native morph bridge failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish2(ctx, input1_buf, input2_buf, output_buf, "Native morph bridge failed")
 
 
 def morph_native(Buffer buf1 not None, Buffer buf2 not None,
@@ -4837,7 +4680,7 @@ def morph_native(Buffer buf1 not None, Buffer buf2 not None,
                  double freq_start=0.0, double freq_end=1.0,
                  double amp_exp=1.0, double freq_exp=1.0,
                  double stagger=0.0, int fft_size=1024):
-    """Full spectral morph using original CDP algorithm (CDP: SPECMORPH).
+    """Full spectral morph, ported from CDP's specmorph.
 
     Full spectral morphing with separate control over amplitude and frequency
     interpolation timing. Supports multiple interpolation curves.
@@ -4863,6 +4706,13 @@ def morph_native(Buffer buf1 not None, Buffer buf2 not None,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(amp_start, "amp_start")
+    _finite(amp_end, "amp_end")
+    _finite(freq_start, "freq_start")
+    _finite(freq_end, "freq_end")
+    _finite(amp_exp, "amp_exp")
+    _finite(freq_exp, "freq_exp")
+    _finite(stagger, "stagger")
     if buf1.sample_rate != buf2.sample_rate:
         raise ValueError("Sample rates must match for morph")
 
@@ -4876,16 +4726,7 @@ def morph_native(Buffer buf1 not None, Buffer buf2 not None,
         amp_start, amp_end, freq_start, freq_end,
         amp_exp, freq_exp, stagger, fft_size)
 
-    cdp_lib_buffer_free(input1_buf)
-    cdp_lib_buffer_free(input2_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Native morph failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish2(ctx, input1_buf, input2_buf, output_buf, "Native morph failed")
 
 
 # =============================================================================
@@ -4917,6 +4758,8 @@ def pitch(Buffer buf not None, double min_freq=50.0, double max_freq=2000.0,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(min_freq, "min_freq")
+    _finite(max_freq, "max_freq")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -4971,6 +4814,7 @@ def formants(Buffer buf not None, int lpc_order=12, int frame_size=1024, int hop
     Raises:
         CDPError: If processing fails.
     """
+    _int_in_range(lpc_order, "lpc_order", 1, 200)
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -5040,6 +4884,8 @@ def get_partials(Buffer buf not None, double min_amp_db=-60.0, int max_partials=
     Raises:
         CDPError: If processing fails.
     """
+    _finite(min_amp_db, "min_amp_db")
+    _finite(freq_tolerance, "freq_tolerance")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -5107,6 +4953,7 @@ def zigzag(Buffer buf not None, times not None, double splice_ms=15.0):
     Example:
         times = [0, 1, 2, 3] plays 0->1 forward, 2->1 backward, 2->3 forward
     """
+    _in_range(splice_ms, "splice_ms", 0.0, MAX_TIME_MS)
     import array
 
     # Convert times to a C array
@@ -5131,15 +4978,7 @@ def zigzag(Buffer buf not None, times not None, double splice_ms=15.0):
         output_buf = cdp_lib_zigzag(
             ctx, input_buf, &times_view[0], n_times, splice_ms)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Zigzag processing failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Zigzag processing failed")
 
 
 def iterate(Buffer buf not None, int repeats=4, double delay=0.5,
@@ -5165,6 +5004,10 @@ def iterate(Buffer buf not None, int repeats=4, double delay=0.5,
     Raises:
         CDPError: If processing fails.
     """
+    _in_range(delay, "delay", 0.0, MAX_DURATION_S)
+    _in_range(delay_rand, "delay_rand", 0.0, 1.0)
+    _finite(pitch_shift, "pitch_shift")
+    _finite(gain_decay, "gain_decay")
     if repeats < 1 or repeats > 100:
         raise ValueError("repeats must be between 1 and 100")
 
@@ -5176,15 +5019,7 @@ def iterate(Buffer buf not None, int repeats=4, double delay=0.5,
         output_buf = cdp_lib_iterate(
             ctx, input_buf, repeats, delay, delay_rand, pitch_shift, gain_decay, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Iterate processing failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Iterate processing failed")
 
 
 def stutter(Buffer buf not None, double segment_ms=100.0, double duration=5.0,
@@ -5212,8 +5047,17 @@ def stutter(Buffer buf not None, double segment_ms=100.0, double duration=5.0,
     Raises:
         CDPError: If processing fails.
     """
-    if segment_ms <= 0:
-        raise ValueError("segment_ms must be positive")
+    # 10 ms is the floor the C implementation actually requires; stating it
+    # here turns "stutter: invalid parameters" into a named-parameter message.
+    _in_range(segment_ms, "segment_ms", 10.0, MAX_GRAIN_MS)
+    _at_most(duration, "duration", MAX_DURATION_S)
+    _finite(silence_prob, "silence_prob")
+    _in_range(silence_min_ms, "silence_min_ms", 0.0, MAX_TIME_MS)
+    _in_range(silence_max_ms, "silence_max_ms", 0.0, MAX_TIME_MS)
+    _finite(transpose_range, "transpose_range")
+    # segment_ms is covered by the range guard above: a positive-but-vanishing
+    # value implies an unbounded number of segments, so the floor is the check
+    # that matters, not the sign.
     if duration <= 0:
         raise ValueError("duration must be positive")
 
@@ -5226,15 +5070,7 @@ def stutter(Buffer buf not None, double segment_ms=100.0, double duration=5.0,
             ctx, input_buf, segment_ms, duration, silence_prob,
             silence_min_ms, silence_max_ms, transpose_range, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Stutter processing failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Stutter processing failed")
 
 
 def bounce(Buffer buf not None, int bounces=8, double initial_delay=0.5,
@@ -5260,6 +5096,10 @@ def bounce(Buffer buf not None, int bounces=8, double initial_delay=0.5,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(initial_delay, "initial_delay")
+    _finite(shrink, "shrink")
+    _finite(end_level, "end_level")
+    _finite(level_curve, "level_curve")
     if bounces < 1 or bounces > 100:
         raise ValueError("bounces must be between 1 and 100")
     if initial_delay <= 0:
@@ -5275,15 +5115,7 @@ def bounce(Buffer buf not None, int bounces=8, double initial_delay=0.5,
         output_buf = cdp_lib_bounce(
             ctx, input_buf, bounces, initial_delay, shrink, end_level, level_curve, cut_bounces)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Bounce processing failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Bounce processing failed")
 
 
 def drunk(Buffer buf not None, double duration=5.0, double step_ms=100.0,
@@ -5314,6 +5146,13 @@ def drunk(Buffer buf not None, double duration=5.0, double step_ms=100.0,
     Raises:
         CDPError: If processing fails.
     """
+    _at_most(duration, "duration", MAX_DURATION_S)
+    _at_most(step_ms, "step_ms", MAX_TIME_MS)
+    _finite(step_rand, "step_rand")
+    _finite(locus, "locus")
+    _finite(ambitus, "ambitus")
+    _finite(overlap, "overlap")
+    _in_range(splice_ms, "splice_ms", 0.0, MAX_TIME_MS)
     if duration <= 0:
         raise ValueError("duration must be positive")
     if step_ms <= 0:
@@ -5337,15 +5176,7 @@ def drunk(Buffer buf not None, double duration=5.0, double step_ms=100.0,
             ctx, input_buf, duration, step_ms, step_rand, actual_locus, actual_ambitus,
             overlap, splice_ms, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Drunk processing failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Drunk processing failed")
 
 
 def loop(Buffer buf not None, double start=0.0, double length_ms=500.0,
@@ -5372,6 +5203,11 @@ def loop(Buffer buf not None, double start=0.0, double length_ms=500.0,
     Raises:
         CDPError: If processing fails.
     """
+    _in_range(start, "start", 0.0, MAX_DURATION_S)
+    _at_most(length_ms, "length_ms", MAX_TIME_MS)
+    _in_range(step_ms, "step_ms", 0.0, MAX_TIME_MS)
+    _in_range(search_ms, "search_ms", 0.0, MAX_TIME_MS)
+    _in_range(splice_ms, "splice_ms", 0.0, MAX_TIME_MS)
     if length_ms <= 0:
         raise ValueError("length_ms must be positive")
     if repeats < 1 or repeats > 1000:
@@ -5385,15 +5221,7 @@ def loop(Buffer buf not None, double start=0.0, double length_ms=500.0,
         output_buf = cdp_lib_loop(
             ctx, input_buf, start, length_ms, step_ms, search_ms, repeats, splice_ms, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Loop processing failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Loop processing failed")
 
 
 def retime(buf not None, double ratio=1.0, double grain_ms=50.0, double overlap=0.5):
@@ -5431,6 +5259,9 @@ def retime(buf not None, double ratio=1.0, double grain_ms=50.0, double overlap=
         >>> # Speed up to double speed (half duration)
         >>> result = cycdp.retime(audio, ratio=2.0)
     """
+    _finite(ratio, "ratio")
+    _finite(grain_ms, "grain_ms")
+    _finite(overlap, "overlap")
     if ratio <= 0 or ratio > 10:
         raise ValueError("ratio must be > 0 and <= 10")
     if grain_ms < 5 or grain_ms > 500:
@@ -5446,15 +5277,7 @@ def retime(buf not None, double ratio=1.0, double grain_ms=50.0, double overlap=
         output_buf = cdp_lib_retime(
             ctx, input_buf, ratio, grain_ms, overlap)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Retime processing failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Retime processing failed")
 
 
 # Scramble mode constants
@@ -5513,15 +5336,7 @@ def scramble(buf not None, int mode=0, int group_size=2, unsigned int seed=0):
         output_buf = cdp_lib_scramble(
             ctx, input_buf, mode, group_size, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Scramble processing failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Scramble processing failed")
 
 
 def splinter(buf not None, double start=0.0, double duration_ms=50.0, int repeats=20,
@@ -5563,6 +5378,11 @@ def splinter(buf not None, double start=0.0, double duration_ms=50.0, int repeat
         >>> # Aggressive splintering with fast shrinkage
         >>> result = cycdp.splinter(audio, duration_ms=50, repeats=50, min_shrink=0.05)
     """
+    _finite(start, "start")
+    _finite(duration_ms, "duration_ms")
+    _finite(min_shrink, "min_shrink")
+    _finite(shrink_curve, "shrink_curve")
+    _finite(accel, "accel")
     if duration_ms < 5 or duration_ms > 5000:
         raise ValueError("duration_ms must be between 5 and 5000")
     if repeats < 2 or repeats > 500:
@@ -5582,15 +5402,7 @@ def splinter(buf not None, double start=0.0, double duration_ms=50.0, int repeat
         output_buf = cdp_lib_splinter(
             ctx, input_buf, start, duration_ms, repeats, min_shrink, shrink_curve, accel, seed)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Splinter processing failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Splinter processing failed")
 
 
 def spin(buf, double rate=1.0, double doppler=0.0, double depth=1.0):
@@ -5612,6 +5424,9 @@ def spin(buf, double rate=1.0, double doppler=0.0, double depth=1.0):
     Returns:
         Buffer: New stereo buffer with spinning audio.
     """
+    _finite(rate, "rate")
+    _finite(doppler, "doppler")
+    _finite(depth, "depth")
     if rate < -20.0 or rate > 20.0:
         raise ValueError("rate must be between -20 and 20 Hz")
     if doppler < 0.0 or doppler > 12.0:
@@ -5626,15 +5441,7 @@ def spin(buf, double rate=1.0, double doppler=0.0, double depth=1.0):
     with nogil:
         output_buf = cdp_lib_spin(ctx, input_buf, rate, doppler, depth)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Spin processing failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Spin processing failed")
 
 
 def rotor(buf, double pitch_rate=1.0, double pitch_depth=2.0,
@@ -5662,6 +5469,11 @@ def rotor(buf, double pitch_rate=1.0, double pitch_depth=2.0,
     effect creates evolving patterns that cycle through various combinations
     of pitch and amplitude modulation over time.
     """
+    _finite(pitch_rate, "pitch_rate")
+    _finite(pitch_depth, "pitch_depth")
+    _finite(amp_rate, "amp_rate")
+    _finite(amp_depth, "amp_depth")
+    _finite(phase_offset, "phase_offset")
     if pitch_rate < 0.01 or pitch_rate > 20.0:
         raise ValueError("pitch_rate must be between 0.01 and 20 Hz")
     if pitch_depth < 0.0 or pitch_depth > 12.0:
@@ -5681,15 +5493,7 @@ def rotor(buf, double pitch_rate=1.0, double pitch_depth=2.0,
         output_buf = cdp_lib_rotor(
             ctx, input_buf, pitch_rate, pitch_depth, amp_rate, amp_depth, phase_offset)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Rotor processing failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Rotor processing failed")
 
 
 def synth_wave(int waveform=WAVE_SINE, double frequency=440.0, double amplitude=0.8,
@@ -5711,6 +5515,9 @@ def synth_wave(int waveform=WAVE_SINE, double frequency=440.0, double amplitude=
     Returns:
         Buffer: New buffer with synthesized waveform.
     """
+    _finite(frequency, "frequency")
+    _finite(amplitude, "amplitude")
+    _finite(duration, "duration")
     if waveform < 0 or waveform > 4:
         raise ValueError("waveform must be 0-4 (WAVE_SINE, WAVE_SQUARE, WAVE_SAW, WAVE_RAMP, WAVE_TRIANGLE)")
     if frequency < 20.0 or frequency > 20000.0:
@@ -5758,6 +5565,8 @@ def synth_noise(int pink=0, double amplitude=0.8, double duration=1.0,
     Returns:
         Buffer: New buffer with synthesized noise.
     """
+    _finite(amplitude, "amplitude")
+    _finite(duration, "duration")
     if amplitude < 0.0 or amplitude > 1.0:
         raise ValueError("amplitude must be between 0.0 and 1.0")
     if duration < 0.001 or duration > 3600.0:
@@ -5801,6 +5610,10 @@ def synth_click(double tempo=120.0, int beats_per_bar=4, double duration=10.0,
     Returns:
         Buffer: New mono buffer with click track.
     """
+    _finite(tempo, "tempo")
+    _finite(duration, "duration")
+    _finite(click_freq, "click_freq")
+    _finite(click_dur_ms, "click_dur_ms")
     if tempo < 20.0 or tempo > 400.0:
         raise ValueError("tempo must be between 20 and 400 BPM")
     if beats_per_bar < 0 or beats_per_bar > 16:
@@ -5858,6 +5671,9 @@ def synth_chord(midi_notes, double amplitude=0.8, double duration=1.0,
         # A minor chord with detuning for richer sound
         chord = synth_chord([69, 72, 76], detune_cents=5.0)
     """
+    _finite(amplitude, "amplitude")
+    _finite(duration, "duration")
+    _finite(detune_cents, "detune_cents")
     # Convert input to list if needed
     if not hasattr(midi_notes, '__len__'):
         midi_notes = [midi_notes]
@@ -5927,6 +5743,7 @@ def psow_stretch(Buffer buf not None, double stretch_factor=1.0, int grain_count
     Raises:
         CDPError: If processing fails.
     """
+    _in_range(stretch_factor, "stretch_factor", MIN_FACTOR, MAX_FACTOR)
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -5936,15 +5753,7 @@ def psow_stretch(Buffer buf not None, double stretch_factor=1.0, int grain_count
             ctx, input_buf, stretch_factor, grain_count
         )
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "PSOW stretch failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "PSOW stretch failed")
 
 
 def psow_grab(Buffer buf not None, double time=0.0, double duration=0.0,
@@ -5970,6 +5779,9 @@ def psow_grab(Buffer buf not None, double time=0.0, double duration=0.0,
     Raises:
         CDPError: If processing fails.
     """
+    _in_range(time, "time", 0.0, MAX_DURATION_S)
+    _in_range(duration, "duration", 0.0, MAX_DURATION_S)
+    _in_range(density, "density", 0.0, MAX_DENSITY)
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -5979,15 +5791,7 @@ def psow_grab(Buffer buf not None, double time=0.0, double duration=0.0,
             ctx, input_buf, time, duration, grain_count, density
         )
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "PSOW grab failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "PSOW grab failed")
 
 
 def psow_dupl(Buffer buf not None, int repeat_count=2, int grain_count=1):
@@ -6016,15 +5820,7 @@ def psow_dupl(Buffer buf not None, int repeat_count=2, int grain_count=1):
             ctx, input_buf, repeat_count, grain_count
         )
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "PSOW dupl failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "PSOW dupl failed")
 
 
 def psow_interp(Buffer grain1 not None, Buffer grain2 not None,
@@ -6048,6 +5844,9 @@ def psow_interp(Buffer grain1 not None, Buffer grain2 not None,
     Raises:
         CDPError: If processing fails.
     """
+    _in_range(start_dur, "start_dur", 0.0, MAX_DURATION_S)
+    _in_range(interp_dur, "interp_dur", 0.0, MAX_DURATION_S)
+    _in_range(end_dur, "end_dur", 0.0, MAX_DURATION_S)
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* grain1_buf
     cdef cdp_lib_buffer* grain2_buf
@@ -6059,16 +5858,7 @@ def psow_interp(Buffer grain1 not None, Buffer grain2 not None,
             ctx, grain1_buf, grain2_buf, start_dur, interp_dur, end_dur
         )
 
-    cdp_lib_buffer_free(grain1_buf)
-    cdp_lib_buffer_free(grain2_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "PSOW interp failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish2(ctx, grain1_buf, grain2_buf, output_buf, "PSOW interp failed")
 
 
 # =============================================================================
@@ -6094,6 +5884,7 @@ def fofex_extract(Buffer buf not None, double time, int fof_count=1, bint window
     Raises:
         CDPError: If extraction fails.
     """
+    _in_range(time, "time", 0.0, MAX_DURATION_S)
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -6103,15 +5894,7 @@ def fofex_extract(Buffer buf not None, double time, int fof_count=1, bint window
             ctx, input_buf, time, fof_count, 1 if window else 0
         )
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "FOFEX extract failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "FOFEX extract failed")
 
 
 def fofex_extract_all(Buffer buf not None, int fof_count=1, double min_level_db=0.0,
@@ -6138,6 +5921,7 @@ def fofex_extract_all(Buffer buf not None, int fof_count=1, double min_level_db=
     Raises:
         CDPError: If extraction fails.
     """
+    _finite(min_level_db, "min_level_db")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
     cdef int fof_info[2]
@@ -6184,6 +5968,9 @@ def fofex_synth(Buffer fof_bank not None, double duration, double frequency,
     Raises:
         CDPError: If synthesis fails.
     """
+    _in_range(duration, "duration", 0.0, MAX_DURATION_S)
+    _finite(frequency, "frequency")
+    _finite(amplitude, "amplitude")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* fof_buf = _buffer_to_cdp_lib(fof_bank)
 
@@ -6193,15 +5980,7 @@ def fofex_synth(Buffer fof_bank not None, double duration, double frequency,
             ctx, fof_buf, duration, frequency, amplitude, fof_index, fof_unit_len
         )
 
-    cdp_lib_buffer_free(fof_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "FOFEX synth failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, fof_buf, output_buf, "FOFEX synth failed")
 
 
 def fofex_repitch(Buffer buf not None, double pitch_shift, bint preserve_formants=True):
@@ -6223,6 +6002,7 @@ def fofex_repitch(Buffer buf not None, double pitch_shift, bint preserve_formant
     Raises:
         CDPError: If processing fails.
     """
+    _finite(pitch_shift, "pitch_shift")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -6232,15 +6012,7 @@ def fofex_repitch(Buffer buf not None, double pitch_shift, bint preserve_formant
             ctx, input_buf, pitch_shift, 1 if preserve_formants else 0
         )
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "FOFEX repitch failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "FOFEX repitch failed")
 
 
 # =============================================================================
@@ -6271,6 +6043,9 @@ def flutter(Buffer buf not None, double frequency=4.0, double depth=1.0,
     Raises:
         CDPError: If processing fails.
     """
+    _finite(frequency, "frequency")
+    _finite(depth, "depth")
+    _finite(gain, "gain")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -6280,15 +6055,7 @@ def flutter(Buffer buf not None, double frequency=4.0, double depth=1.0,
             ctx, input_buf, frequency, depth, gain, 1 if randomize else 0
         )
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Flutter failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Flutter failed")
 
 
 # =============================================================================
@@ -6333,6 +6100,12 @@ def hover(Buffer buf not None, double frequency=440.0, double location=0.5,
     Raises:
         CDPError: If processing fails (e.g., non-mono input).
     """
+    _finite(frequency, "frequency")
+    _finite(location, "location")
+    _finite(frq_rand, "frq_rand")
+    _finite(loc_rand, "loc_rand")
+    _in_range(splice_ms, "splice_ms", 0.0, MAX_TIME_MS)
+    _in_range(duration, "duration", 0.0, MAX_DURATION_S)
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -6342,15 +6115,7 @@ def hover(Buffer buf not None, double frequency=440.0, double location=0.5,
             ctx, input_buf, frequency, location, frq_rand, loc_rand, splice_ms, duration
         )
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Hover failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Hover failed")
 
 
 # =============================================================================
@@ -6383,6 +6148,7 @@ def constrict(Buffer buf not None, double constriction=50.0):
     Raises:
         CDPError: If processing fails.
     """
+    _finite(constriction, "constriction")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -6390,15 +6156,7 @@ def constrict(Buffer buf not None, double constriction=50.0):
     with nogil:
         output_buf = cdp_lib_constrict(ctx, input_buf, constriction)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Constrict failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Constrict failed")
 
 
 # =============================================================================
@@ -6491,6 +6249,7 @@ def phase_stereo(Buffer buf not None, double transfer=1.0):
     Raises:
         CDPError: If processing fails (e.g., non-stereo input).
     """
+    _finite(transfer, "transfer")
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -6498,15 +6257,7 @@ def phase_stereo(Buffer buf not None, double transfer=1.0):
     with nogil:
         output_buf = cdp_lib_phase_stereo(ctx, input_buf, transfer)
 
-    cdp_lib_buffer_free(input_buf)
-
-    if output_buf is NULL:
-        error_msg = cdp_lib_get_error(ctx)
-        raise CDPError(-1, error_msg.decode('utf-8') if error_msg else "Phase stereo failed")
-
-    cdef Buffer result = _take_cdp_lib_buffer(output_buf)
-
-    return result
+    return _finish(ctx, input_buf, output_buf, "Phase stereo failed")
 
 
 # =============================================================================
@@ -6562,6 +6313,14 @@ def wrappage(Buffer buf not None, double grain_size=50.0, double density=1.0,
     Raises:
         CDPError: If processing fails (e.g., non-mono input, invalid parameters).
     """
+    _finite(grain_size, "grain_size")
+    _in_range(density, "density", 0.0, MAX_DENSITY)
+    _finite(velocity, "velocity")
+    _finite(pitch, "pitch")
+    _finite(spread, "spread")
+    _finite(jitter, "jitter")
+    _in_range(splice_ms, "splice_ms", 0.0, MAX_TIME_MS)
+    _in_range(duration, "duration", 0.0, MAX_DURATION_S)
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 

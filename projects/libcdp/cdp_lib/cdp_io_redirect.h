@@ -1,6 +1,9 @@
 /*
  * CDP I/O Redirect Layer
  *
+ * NOT BUILT. The slot table behind the abandoned sfsys shim; see the header
+ * comment in cdp_shim.h for what the approach was and why it was dropped.
+ *
  * This layer intercepts CDP's file I/O calls and redirects them
  * to memory buffers when running in library mode.
  *

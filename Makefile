@@ -4,7 +4,8 @@
 # This Makefile wraps common build commands for convenience.
 # The actual build is handled by scikit-build-core via pyproject.toml
 
-.PHONY: all sync build rebuild test lint format typecheck qa clean \
+.PHONY: all sync build rebuild test fuzz fuzz-sanitize validation-check \
+        lint format typecheck qa clean \
         distclean wheel sdist dist check publish-test publish upgrade \
         coverage coverage-html coverage-build docs release bump demos \
         demos-clean help stubs stubs-check sanitize tsan
@@ -26,6 +27,22 @@ rebuild: build
 # Run tests
 test:
 	@uv run pytest tests/ -v
+
+# Drive every public function with NaN, Inf and absurd magnitudes, each call in
+# its own subprocess. The suite and the sanitizers only ever see well-formed
+# input; this is what covers the rest. Found four crashes and thirteen hangs.
+fuzz:
+	@uv run python scripts/fuzz_api.py
+
+# The same sweep with the extension built under ASan/UBSan, which is where it
+# pays off: an out-of-bounds read becomes a precise report rather than a
+# segfault. Linux only (macOS strips the runtime from child processes).
+fuzz-sanitize:
+	@CYCDP_SAN_COMMAND=fuzz bash scripts/run_sanitizers.sh
+
+# Fail if a public function has a float parameter with no validation guard
+validation-check:
+	@uv run python scripts/check_validation.py
 
 # Run all demos and generate WAV files to build/
 demos:
@@ -73,7 +90,7 @@ stubs-check:
 
 # Run a full quality assurance check.
 # format runs first so that lint and test see the formatted tree.
-qa: format lint stubs-check typecheck test
+qa: format lint stubs-check validation-check typecheck test
 
 # Build wheel
 wheel:
@@ -182,6 +199,9 @@ help:
 	@echo "  build        - Rebuild extension after code changes"
 	@echo "  rebuild      - Alias for build"
 	@echo "  test         - Run tests"
+	@echo "  fuzz         - Drive every function with hostile parameter values"
+	@echo "  fuzz-sanitize- Same sweep under ASan/UBSan (Linux only)"
+	@echo "  validation-check - Fail on an unguarded float parameter"
 	@echo "  demos        - Run all demos and generate WAV files to build/"
 	@echo "  demos-clean  - Clean demo output files"
 	@echo "  lint         - Lint with ruff"
@@ -189,7 +209,7 @@ help:
 	@echo "  typecheck    - Type check with mypy"
 	@echo "  stubs        - Regenerate _core.pyi from _core.pyx"
 	@echo "  stubs-check  - Fail if committed stubs are stale"
-	@echo "  qa           - Run full QA (format, lint, stubs-check, typecheck, test)"
+	@echo "  qa           - Run full QA (format, lint, stubs, validation, typecheck, test)"
 	@echo "  wheel        - Build wheel distribution"
 	@echo "  sdist        - Build source distribution"
 	@echo "  dist         - Build both wheel and sdist"
