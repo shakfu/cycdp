@@ -437,23 +437,40 @@ class TestThreadContextLifetime:
         )
 
     def test_concurrent_threads_each_get_their_own(self, audio):
-        """Contexts are per-thread, so N workers means N contexts."""
+        """Contexts are per-thread, so N workers means N contexts.
+
+        The barrier holds every worker alive simultaneously, which is the only
+        way to observe the peak. It carries a timeout and an abort-on-error
+        path: a participant that raises before arriving would otherwise leave
+        the rest blocked forever, and a test that hangs in CI burns the job's
+        whole time limit instead of failing in seconds.
+        """
         before = self.live()
         peak = []
-        barrier = threading.Barrier(8)
+        errors = []
+        workers = 8
+        barrier = threading.Barrier(workers)
 
         def work():
-            cycdp.bitcrush(audio)
-            barrier.wait()  # hold every thread alive at once
-            peak.append(self.live())
+            try:
+                cycdp.bitcrush(audio)
+                # Generous: emulated CI runners are an order of magnitude
+                # slower, and the point is to bound a hang, not to time it.
+                barrier.wait(timeout=60)
+                peak.append(self.live())
+            except Exception as exc:
+                errors.append(exc)
+                barrier.abort()  # release the others rather than stranding them
 
-        threads = [threading.Thread(target=work) for _ in range(8)]
+        threads = [threading.Thread(target=work) for _ in range(workers)]
         for t in threads:
             t.start()
         for t in threads:
-            t.join()
+            t.join(timeout=120)
 
-        assert max(peak) == before + 8
+        assert not [t for t in threads if t.is_alive()], "a worker never finished"
+        assert not errors, f"workers raised: {errors[:3]}"
+        assert max(peak) == before + workers
         assert self.live() == before, "all eight should be released on exit"
 
     def test_release_thread_context_is_safe_to_call_anytime(self):
