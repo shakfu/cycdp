@@ -31,7 +31,15 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_C_VISIBILITY_PRESET hidden)
 set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
 
-find_package(Python REQUIRED COMPONENTS Interpreter Development.Module)
+# Build against the stable ABI by default, so one wheel serves every supported
+# interpreter instead of one per minor version. See CYCDP_ABI3 below for why
+# the coverage build opts out; Development.Module is still required because
+# that build links the ordinary way.
+option(CYCDP_ABI3 "Build the extension against the CPython stable ABI (abi3)" ON)
+
+find_package(Python REQUIRED
+    COMPONENTS Interpreter Development.Module
+    OPTIONAL_COMPONENTS Development.SABIModule)
 
 # =============================================================================
 # Warnings
@@ -255,7 +263,32 @@ add_custom_command(
     DEPENDS src/cycdp/_core.pyx scripts/run_cython.py
 )
 
-python_add_library(_core MODULE "${CYTHON_OUTPUT}" WITH_SOABI)
+# Coverage instruments via CYTHON_TRACE, which reaches into PyFrameObject --
+# not part of the limited API. The two cannot be combined, so the coverage
+# build falls back to the version-specific ABI. That build is never shipped;
+# it exists to measure _core.pyx, and it measures the same source either way.
+if(CYCDP_ABI3 AND CYCDP_COVERAGE)
+    message(STATUS "cycdp: coverage build requested, disabling abi3 (CYTHON_TRACE needs the full API)")
+    set(CYCDP_ABI3 OFF)
+endif()
+
+if(CYCDP_ABI3 AND NOT Python_Development.SABIModule_FOUND)
+    message(FATAL_ERROR
+        "CYCDP_ABI3 is ON but CMake could not find Development.SABIModule. "
+        "Configure with -DCYCDP_ABI3=OFF to build a version-specific module.")
+endif()
+
+if(CYCDP_ABI3)
+    # 3.11 is the floor because the buffer protocol (Py_buffer,
+    # PyObject_GetBuffer, the bf_getbuffer slot) only entered the stable ABI in
+    # 3.11. Building against 3.10 fails with 20 errors, all "unknown type name
+    # 'Py_buffer'" -- and Buffer.__getbuffer__ plus every float[::1] parameter
+    # is the zero-copy interop this library is built around, so it cannot be
+    # given up. Keep this in step with wheel.py-api in pyproject.toml.
+    python_add_library(_core MODULE USE_SABI 3.11 WITH_SOABI "${CYTHON_OUTPUT}")
+else()
+    python_add_library(_core MODULE "${CYTHON_OUTPUT}" WITH_SOABI)
+endif()
 
 if(CYCDP_COVERAGE)
     # CYTHON_TRACE_NOGIL implies CYTHON_TRACE and also traces nogil blocks.

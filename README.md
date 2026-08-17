@@ -85,6 +85,10 @@ Verified with ThreadSanitizer over a mixed multi-threaded workload. On a four-co
 pip install cycdp
 ```
 
+Requires Python 3.11 or later. Wheels are built against the CPython stable ABI,
+so a single `cp311-abi3` wheel per platform serves 3.11 and every later
+interpreter, including ones released after the wheel was.
+
 If you prefer to build from source:
 
 ```bash

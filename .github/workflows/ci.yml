@@ -182,13 +182,18 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        # Must bracket requires-python (">=3.10"). 3.9 was listed here, below
-        # the supported floor: uv honours requires-python and silently resolved
-        # a newer interpreter, so the job passed while its name claimed
-        # coverage it did not have -- and 3.10, the actual floor, was never
+        # Must bracket requires-python (">=3.11"). 3.9 was once listed here,
+        # below the supported floor: uv honours requires-python and silently
+        # resolved a newer interpreter, so the job passed while its name
+        # claimed coverage it did not have -- and the actual floor was never
         # built. Keep this as [floor, ceiling] and move both when
         # requires-python moves.
-        python-version: ["3.10", "3.14"]
+        #
+        # The floor matters more than usual now that wheels are abi3: it is the
+        # only version the extension is actually compiled against, and the
+        # ceiling is what proves one abi3 build really does load on a later
+        # interpreter.
+        python-version: ["3.11", "3.14"]
 
     steps:
       - uses: actions/checkout@v7

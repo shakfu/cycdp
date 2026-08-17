@@ -72,11 +72,42 @@ if [ ! -d "$SITE_PKG" ]; then
     echo "error: cycdp is not installed at $SITE_PKG (run 'make sync')" >&2
     exit 1
 fi
-TARGET="$SITE_PKG/$(basename "$SO")"
+# Overwrite the installed extension in place, keeping whatever filename it
+# already has, and put the original back on exit however this script ends.
+#
+# Using the *installed* name rather than the built one is load-bearing. The
+# project is installed editable, and scikit-build-core's editable finder
+# hardcodes the extension path -- {'cycdp._core': 'cycdp/_core.cpython-313-darwin.so'}
+# in _editable_skbc_cycdp.py -- so the module resolves by that exact name and
+# no other. Installing under the build's own name instead leaves the mapped
+# file missing, and every import dies with a dlopen "no such file" naming a
+# path that was never written.
+#
+# This only became reachable when wheels moved to abi3, because the build
+# variants stopped agreeing on a filename: an ordinary build now produces
+# _core.abi3.so while a coverage build still produces
+# _core.cpython-3XY-<plat>.so.
+INSTALLED="$(find "$SITE_PKG" -maxdepth 1 \( -name '_core*.so' -o -name '_core*.pyd' \))"
+COUNT="$(printf '%s' "$INSTALLED" | grep -c . || true)"
+
+if [ "$COUNT" -eq 0 ]; then
+    echo "error: no built extension installed in $SITE_PKG (run 'make sync')" >&2
+    exit 1
+fi
+if [ "$COUNT" -gt 1 ]; then
+    # Python imports exactly one of these and ignores the rest, so carrying on
+    # would instrument a module the interpreter never loads.
+    echo "error: $COUNT extensions installed in $SITE_PKG:" >&2
+    printf '  %s\n' $INSTALLED >&2
+    echo "Remove the extras and reinstall: uv sync --dev --no-cache --reinstall-package cycdp" >&2
+    exit 1
+fi
+
+TARGET="$INSTALLED"
 BACKUP="$(mktemp -t cycdp_core_backup.XXXXXX)"
 
 restore() {
-    if [ -f "$BACKUP" ] && [ -s "$BACKUP" ]; then
+    if [ -s "$BACKUP" ]; then
         cp "$BACKUP" "$TARGET"
         echo "==> Restored the original (non-instrumented) extension"
     fi
@@ -84,9 +115,7 @@ restore() {
 }
 trap restore EXIT
 
-if [ -f "$TARGET" ]; then
-    cp "$TARGET" "$BACKUP"
-fi
+cp "$TARGET" "$BACKUP"
 cp "$SO" "$TARGET"
 
 # detect_leaks=0: CPython does not free its interpreter state at exit, so leak

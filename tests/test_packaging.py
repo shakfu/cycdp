@@ -1,10 +1,18 @@
 """Keep the declarations of supported Python versions in agreement.
 
-Supported versions are stated in four places, and they had drifted: the CI
-build matrix listed 3.9, below the `requires-python = ">=3.10"` floor. uv
-honours requires-python and silently resolved a newer interpreter, so the job
-passed while its name claimed coverage it did not have -- and 3.10, the actual
-floor, was never built or tested.
+Supported versions are stated in six places now, and they have drifted before:
+the CI build matrix once listed 3.9, below the then-current
+`requires-python = ">=3.10"` floor. uv honours requires-python and silently
+resolved a newer interpreter, so the job passed while its name claimed coverage
+it did not have -- and the actual floor was never built or tested.
+
+Since the move to abi3 the floor carries more weight, because it is no longer
+just metadata. It is the version the extension is compiled against
+(`USE_SABI` in CMakeLists.txt), the tag the wheel carries (`wheel.py-api`), and
+the version pip enforces at install time. A wheel tagged cp311-abi3 installs on
+3.11 and refuses below it, so a floor that disagrees with the compiled ABI
+level is not a documentation error -- it is an ImportError for whoever installs
+at the boundary.
 
 Parsed with regex rather than PyYAML/tomllib-plus-a-YAML-dep so this adds no
 dependency; the patterns are narrow and fail loudly if a file is restructured.
@@ -14,6 +22,7 @@ from __future__ import annotations
 
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -22,6 +31,7 @@ REPO = Path(__file__).resolve().parent.parent
 PYPROJECT = REPO / "pyproject.toml"
 CI = REPO / ".github" / "workflows" / "ci.yml"
 PUBLISH = REPO / ".github" / "workflows" / "build-publish.yml"
+CMAKELISTS = REPO / "CMakeLists.txt"
 
 
 def version_tuple(text: str) -> tuple[int, int]:
@@ -32,15 +42,10 @@ def version_tuple(text: str) -> tuple[int, int]:
 @pytest.fixture(scope="module")
 def requires_python() -> tuple[int, int]:
     """The floor from pyproject's requires-python."""
-    if sys.version_info >= (3, 11):
-        import tomllib
-
-        data = tomllib.loads(PYPROJECT.read_text())
-        spec = data["project"]["requires-python"]
-    else:  # pragma: no cover - only on the oldest supported interpreter
-        m = re.search(r'^requires-python\s*=\s*"([^"]+)"', PYPROJECT.read_text(), re.M)
-        assert m, "could not find requires-python in pyproject.toml"
-        spec = m.group(1)
+    # tomllib is stdlib from 3.11, which is now the floor, so there is no
+    # longer a regex fallback for interpreters that lack it.
+    data = tomllib.loads(PYPROJECT.read_text())
+    spec = data["project"]["requires-python"]
 
     m = re.search(r">=\s*(\d+\.\d+)", spec)
     assert m, f"expected a >= floor in requires-python, got {spec!r}"
@@ -73,6 +78,22 @@ def cibuildwheel_versions() -> list[tuple[int, int]]:
     return sorted((int(a), int(b)) for a, b in found)
 
 
+@pytest.fixture(scope="module")
+def abi3_target() -> tuple[int, int]:
+    """The stable-ABI floor from scikit-build's wheel.py-api."""
+    m = re.search(r'^wheel\.py-api\s*=\s*"cp(\d)(\d+)"', PYPROJECT.read_text(), re.M)
+    assert m, "could not find wheel.py-api in pyproject.toml"
+    return int(m.group(1)), int(m.group(2))
+
+
+@pytest.fixture(scope="module")
+def cmake_sabi_version() -> tuple[int, int]:
+    """The version passed to USE_SABI in CMakeLists.txt."""
+    m = re.search(r"USE_SABI\s+(\d+)\.(\d+)", CMAKELISTS.read_text())
+    assert m, "could not find USE_SABI in CMakeLists.txt"
+    return int(m.group(1)), int(m.group(2))
+
+
 def fmt(v: tuple[int, int]) -> str:
     return f"{v[0]}.{v[1]}"
 
@@ -102,14 +123,51 @@ class TestPythonSupportIsConsistent:
             f"requires-python floor is {fmt(requires_python)}"
         )
 
-    def test_cibuildwheel_matches_the_classifiers(
-        self, cibuildwheel_versions, classifier_versions
+    def test_cibuildwheel_builds_only_the_abi3_target(
+        self, cibuildwheel_versions, abi3_target
     ):
-        assert cibuildwheel_versions == classifier_versions, (
+        """Under abi3 one build covers every later interpreter.
+
+        This used to require CIBW_BUILD to enumerate exactly the classifier
+        versions, which was right while each version got its own wheel. It is
+        wrong now: building cp312 as well as cp311 would upload a redundant
+        wheel that shadows the abi3 one on that version, so the artifact users
+        install would no longer be the artifact CI exercised most.
+        """
+        assert cibuildwheel_versions == [abi3_target], (
             f"CIBW_BUILD targets {[fmt(v) for v in cibuildwheel_versions]} but "
-            f"pyproject classifiers declare "
-            f"{[fmt(v) for v in classifier_versions]}; released wheels would "
-            f"not match the advertised support"
+            f"wheel.py-api declares abi3 from {fmt(abi3_target)}; it should "
+            f"build that one version and nothing else"
+        )
+
+    def test_abi3_target_is_the_supported_floor(
+        self, abi3_target, requires_python, classifier_versions
+    ):
+        """A wheel tagged cp3Y-abi3 refuses to install below 3.Y.
+
+        So the abi3 target and the advertised floor are the same number seen
+        from two directions -- if they drift, either pip rejects installs the
+        metadata promised, or the metadata disclaims versions that work.
+        """
+        assert abi3_target == requires_python, (
+            f"wheel.py-api is cp{abi3_target[0]}{abi3_target[1]} but "
+            f"requires-python floor is {fmt(requires_python)}"
+        )
+        assert classifier_versions[0] == abi3_target, (
+            f"lowest classifier is {fmt(classifier_versions[0])} but the abi3 "
+            f"target is {fmt(abi3_target)}"
+        )
+
+    def test_cmake_sabi_matches_wheel_py_api(self, cmake_sabi_version, abi3_target):
+        """The compiled Py_LIMITED_API level must match the wheel's tag.
+
+        These are set in different files by different tools and nothing else
+        connects them. If CMake compiled against 3.12 while the wheel claimed
+        cp311-abi3, the wheel would install on 3.11 and fail at import.
+        """
+        assert cmake_sabi_version == abi3_target, (
+            f"CMakeLists.txt builds USE_SABI {fmt(cmake_sabi_version)} but "
+            f"pyproject declares wheel.py-api cp{abi3_target[0]}{abi3_target[1]}"
         )
 
     def test_ci_matrix_covers_the_ceiling(
@@ -127,6 +185,44 @@ class TestWorkflowHygiene:
         versions = set(re.findall(r"pypa/cibuildwheel@(v[\d.]+)", PUBLISH.read_text()))
         assert len(versions) == 1, (
             f"build-publish.yml pins multiple cibuildwheel versions: {sorted(versions)}"
+        )
+
+
+class TestExactlyOneExtensionIsInstalled:
+    """Two `_core*.so` in one package means the tests measure the wrong one.
+
+    Build variants stopped sharing a filename when wheels moved to abi3: an
+    ordinary build installs `_core.abi3.so`, a coverage build installs
+    `_core.cpython-3XY-<plat>.so`. Reinstalling therefore no longer overwrites
+    the previous variant, it sits alongside it -- and the version-specific
+    suffix comes first in `importlib.machinery.EXTENSION_SUFFIXES`, so the
+    stale file wins every import.
+
+    That failure is entirely silent: the suite passes, against the wrong
+    artifact. This is the same hazard `tests/test_coverage_setup.py` guards for
+    instrumentation, one level down.
+
+    Only the count is asserted, not which ABI is installed. The filename cannot
+    answer that: the project is installed editable and scikit-build-core's
+    finder pins one path at install time, so a later build of a different ABI
+    overwrites those bytes while the name stays as it was. A coverage-named
+    file holding an abi3 build is a normal intermediate state, not a defect.
+    """
+
+    def test_only_one_core_extension_exists(self):
+        import cycdp._core as core
+
+        pkg = Path(core.__file__).parent
+        found = sorted(
+            p.name
+            for p in pkg.iterdir()
+            if p.name.startswith("_core") and p.suffix in {".so", ".pyd"}
+        )
+        assert len(found) == 1, (
+            f"{len(found)} extension modules installed in {pkg}: {found}. "
+            f"Python imports {Path(core.__file__).name} and ignores the rest, "
+            f"so the suite may be exercising a stale build. Remove the extras "
+            f"and reinstall with `uv sync --dev --no-cache`."
         )
 
 

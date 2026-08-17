@@ -17,10 +17,13 @@ on:
         type: boolean
 
 env:
-  # Must track requires-python (">=3.10") in pyproject.toml and the CI build
-  # matrix. cp314 was previously listed here while a comment above claimed it
-  # was excluded; it is built, and the comment was stale.
-  CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-*"
+  # One entry, not five, because the wheels are abi3: a cp311 build is tagged
+  # cp311-abi3 and installs on 3.11 and every later interpreter. Building the
+  # other four would produce redundant artifacts and, under QEMU on aarch64,
+  # cost roughly five times the wall clock for no added coverage.
+  #
+  # Must track wheel.py-api in pyproject.toml and the requires-python floor.
+  CIBW_BUILD: "cp311-*"
   CIBW_SKIP: "*-musllinux_*"
   CIBW_TEST_REQUIRES: pytest
   # -m "not timing" excludes the wall-clock tests. cibuildwheel runs this in an

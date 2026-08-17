@@ -6,6 +6,61 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Wheels are now built against the CPython stable ABI (abi3). One
+  `cp311-abi3` wheel per platform replaces the five version-specific wheels
+  that were built before, and it installs on 3.11 and every later interpreter
+  -- including ones released after the wheel was, which previously had to wait
+  for a new build.
+
+  This raises the floor to **Python 3.11**, dropping 3.10. The buffer protocol
+  (`Py_buffer`, `PyObject_GetBuffer`, the `bf_getbuffer` slot) only entered the
+  stable ABI in 3.11; compiling against 3.10 fails with 20 errors, every one
+  `unknown type name 'Py_buffer'`. `Buffer.__getbuffer__` and every
+  `float[::1]` parameter are the zero-copy interop the library is built around,
+  so there is no version of this that keeps 3.10. Python 3.10 reaches
+  end-of-life in October 2026.
+
+  Measured cost: none for the DSP itself, which runs in C either way
+  (`time_stretch` on a 1-second buffer, 12.7 ms to 13.1 ms; `reverb`
+  unchanged within noise). Per-call overhead grows about 0.16 us as the limited
+  API replaces refcount macros with function calls -- 0.5 to 0.7 us for `gain`
+  on a 64-sample buffer, which at 44.1 kHz block rate is roughly 0.01% of a
+  core. Indexing and `memoryview()` are unaffected.
+
+  The coverage build opts out and keeps the version-specific ABI, because
+  Cython's line tracing reaches into `PyFrameObject`, which the limited API
+  does not expose. That build is never shipped and measures the same source.
+
+  Configuration for this lives in five places that must agree -- `USE_SABI` in
+  CMakeLists.txt, `wheel.py-api` and `requires-python` in pyproject.toml, the
+  CI matrix floor, and `CIBW_BUILD` -- and `tests/test_packaging.py` now
+  asserts they do. A wheel tagged `cp311-abi3` refuses to install below 3.11,
+  so a floor that disagrees with the compiled ABI level is an ImportError for
+  whoever installs at the boundary, not a documentation slip.
+
+### Fixed
+
+- `scripts/run_sanitizers.sh` could leave an instrumented, sanitizer-linked
+  extension permanently installed, and could make the interpreter import a
+  stale module. It installed the instrumented build under the *built*
+  filename, backing up whatever already occupied that name -- correct only
+  while every build variant produced the same name. Under abi3 they no longer
+  do: an ordinary build produces `_core.abi3.so` and a coverage build
+  `_core.cpython-3XY-<plat>.so`. When the two disagreed, nothing was backed up
+  (so the restore on exit was a no-op) and both files ended up installed at
+  once. `.cpython-3XY-<plat>.so` precedes `.abi3.so` in
+  `importlib.machinery.EXTENSION_SUFFIXES`, so the leftover won every import
+  and the suite silently measured the wrong artifact.
+
+  It now overwrites the installed extension in place under whatever name it
+  already has, which is also required for correctness: the project is
+  installed editable and scikit-build-core's finder pins the extension path at
+  install time, so a module written under any other name is simply never
+  loaded. It refuses to run if zero or more than one extension is installed,
+  and `tests/test_packaging.py` fails if a second one ever appears.
+
 ## [0.3.0]
 
 A minor rather than a patch release: several changes reject input that previously reached the C layer, so a caller relying on the old behaviour will now see a `ValueError` where it used to get a segfault, a hang, or silence. `buf[-1]` also changes meaning, and two spectral operations produce different -- correct -- output. Details under Changed and Fixed.
