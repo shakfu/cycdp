@@ -61,6 +61,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   loaded. It refuses to run if zero or more than one extension is installed,
   and `tests/test_packaging.py` fails if a second one ever appears.
 
+- `test_threads_give_real_speedup` conflated two different things: whether the
+  GIL is released, and how many cores the runner happened to provide. It took a
+  single sequential-versus-threaded measurement and required 1.5x, so a busy
+  shared macOS runner failed it at 1.41x while the same build measured 3.5x on
+  an idle machine. It now takes the best of three attempts, matching what
+  `test_python_threads_keep_running_during_dsp` already did for the same
+  reason: contention can only depress the ratio, never inflate it, so the
+  maximum is the honest measure of whether the calls overlap at all. The 1.5x
+  bound is unchanged and the test keeps full power against the defect it exists
+  to catch -- with the calls serialised to stand in for a GIL-holding build,
+  best-of-three measures 1.01x and still fails.
+
 ## [0.3.0]
 
 A minor rather than a patch release: several changes reject input that previously reached the C layer, so a caller relying on the old behaviour will now see a `ValueError` where it used to get a segfault, a hang, or silence. `buf[-1]` also changes meaning, and two spectral operations produce different -- correct -- output. Details under Changed and Fixed.

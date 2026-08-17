@@ -203,6 +203,29 @@ class TestConcurrentResultsMatchSequential:
 
 
 class TestParallelSpeedup:
+    MIN_SPEEDUP = 1.5
+    ATTEMPTS = 3
+    WORKERS = 4
+    CALLS = 8
+
+    def _measure_speedup(self, buf):
+        """One sequential-versus-threaded comparison. Returns the ratio."""
+
+        def work(_):
+            return cycdp.time_stretch(buf, 3.0).frame_count
+
+        start = time.perf_counter()
+        for i in range(self.CALLS):
+            work(i)
+        sequential = time.perf_counter() - start
+
+        with cf.ThreadPoolExecutor(max_workers=self.WORKERS) as pool:
+            start = time.perf_counter()
+            list(pool.map(work, range(self.CALLS)))
+            parallel = time.perf_counter() - start
+
+        return sequential / parallel, sequential, parallel
+
     @pytest.mark.timing
     @pytest.mark.skipif(
         _coverage_is_tracing(),
@@ -213,28 +236,29 @@ class TestParallelSpeedup:
 
         A loose bound (>1.5x on 4 workers): the point is to catch the GIL
         being reintroduced, not to benchmark the machine.
+
+        Best of several attempts, for the same reason
+        test_python_threads_keep_running_during_dsp takes the best of its own:
+        a busy runner can only ever depress the ratio, never inflate it, so the
+        maximum is the honest measure of whether the calls can overlap at all.
+        A single attempt conflates two different things -- whether the GIL is
+        released, and how many cores the runner happened to give us. It
+        measured 1.41x on a shared macOS runner and failed, while the same
+        build measured 3.5x on an idle machine.
+
+        This keeps full power against the defect it exists to catch: if the GIL
+        were held, every attempt would sit near 1.0x and the maximum would fail
+        just as a single attempt would.
         """
         buf = _sine(1.0, 44100)
-        calls = 8
+        results = [self._measure_speedup(buf) for _ in range(self.ATTEMPTS)]
+        speedup, sequential, parallel = max(results, key=lambda r: r[0])
 
-        def work(_):
-            return cycdp.time_stretch(buf, 3.0).frame_count
-
-        start = time.perf_counter()
-        for i in range(calls):
-            work(i)
-        sequential = time.perf_counter() - start
-
-        with cf.ThreadPoolExecutor(max_workers=4) as pool:
-            start = time.perf_counter()
-            list(pool.map(work, range(calls)))
-            parallel = time.perf_counter() - start
-
-        speedup = sequential / parallel
-        assert speedup > 1.5, (
-            f"{calls} calls took {sequential:.3f}s sequentially and "
-            f"{parallel:.3f}s on 4 threads ({speedup:.2f}x) -- the GIL is "
-            f"probably being held during processing"
+        assert speedup > self.MIN_SPEEDUP, (
+            f"{self.CALLS} calls took {sequential:.3f}s sequentially and "
+            f"{parallel:.3f}s on {self.WORKERS} threads ({speedup:.2f}x, best "
+            f"of {self.ATTEMPTS}) -- the GIL is probably being held during "
+            f"processing"
         )
 
 
