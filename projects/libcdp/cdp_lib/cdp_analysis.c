@@ -137,6 +137,18 @@ cdp_pitch_data* cdp_lib_pitch(cdp_lib_ctx* ctx, const cdp_lib_buffer* input,
     int max_lag = (int)(input->sample_rate / min_freq);
     if (max_lag > frame_size / 2) max_lag = frame_size / 2;
     if (min_lag < 2) min_lag = 2;
+    /* min_freq above the sample rate collapses max_lag to zero, so `d` below
+     * is a zero-byte allocation that yin_difference then writes into. An empty
+     * or inverted lag range means the caller asked for a band the frame cannot
+     * resolve; say so rather than searching it. */
+    if (max_lag <= min_lag) {
+        cdp_lib_buffer_free(mono);
+        cdp_pitch_data_free(result);
+        snprintf(ctx->error_msg, sizeof(ctx->error_msg),
+                 "pitch: [min_freq, max_freq] is not resolvable at this frame "
+                 "size (lag range %d..%d)", min_lag, max_lag);
+        return NULL;
+    }
 
     float *frame = (float *)malloc(frame_size * sizeof(float));
     float *d = (float *)malloc(max_lag * sizeof(float));

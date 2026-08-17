@@ -144,6 +144,11 @@ cdp_lib_buffer* cdp_lib_delay(cdp_lib_ctx* ctx,
     int sample_rate = input->sample_rate;
     int channels = input->channels;
     size_t delay_samples = (size_t)(delay_ms * sample_rate / 1000.0);
+    /* A delay shorter than one sample still needs a line to read and write:
+     * calloc(0, n) returns a non-NULL zero-byte block and the loop below
+     * dereferences delay_buf[ch][write_pos] regardless. ASan reports it as a
+     * heap-buffer-overflow; uninstrumented it silently corrupts the heap. */
+    if (delay_samples < 1) delay_samples = 1;
 
     /* Create output buffer */
     cdp_lib_buffer* output = cdp_lib_buffer_create(

@@ -174,6 +174,12 @@ def stub_functions() -> list[str]:
 
 
 def run_one(name: str, worker: Path, timeout: int, scratch: Path):
+    """Returns (name, failure_kind, last_case, case_count, diagnostics).
+
+    `diagnostics` is the worker's stderr, which is where a sanitizer writes its
+    report. Discarding it made the CI job say only which call failed and not
+    why, which is most of the value of running the sweep under ASan at all.
+    """
     try:
         r = subprocess.run(
             [sys.executable, str(worker), name, str(PYI)],
@@ -188,17 +194,13 @@ def run_one(name: str, worker: Path, timeout: int, scratch: Path):
         )
     except subprocess.TimeoutExpired as e:
         out = (e.stdout or "") if isinstance(e.stdout, str) else ""
-        return name, "TIMEOUT", last_case(out), count_cases(out)
+        return name, "TIMEOUT", last_case(out), count_cases(out), ""
+    kind = None
     if r.returncode < 0:
-        return (
-            name,
-            f"SIGNAL {-r.returncode}",
-            last_case(r.stdout),
-            count_cases(r.stdout),
-        )
-    if r.returncode != 0:
-        return name, f"EXIT {r.returncode}", last_case(r.stdout), count_cases(r.stdout)
-    return name, None, None, count_cases(r.stdout)
+        kind = f"SIGNAL {-r.returncode}"
+    elif r.returncode != 0:
+        kind = f"EXIT {r.returncode}"
+    return name, kind, last_case(r.stdout), count_cases(r.stdout), r.stderr or ""
 
 
 def last_case(out: str) -> str:
@@ -236,10 +238,10 @@ def main() -> int:
             pool.submit(run_one, n, worker, args.timeout, scratch) for n in targets
         ]
         for fut in cf.as_completed(futures):
-            name, kind, case, cases = fut.result()
+            name, kind, case, cases, diagnostics = fut.result()
             total += cases
             if kind:
-                failures.append((name, kind, case))
+                failures.append((name, kind, case, diagnostics))
                 print(f"FAIL {name}: {kind} at {case}", flush=True)
 
     shutil.rmtree(scratch, ignore_errors=True)
@@ -247,8 +249,20 @@ def main() -> int:
     print(f"\n{total} calls across {len(targets)} functions")
     if failures:
         print(f"{len(failures)} function(s) crashed or hung:")
-        for name, kind, case in sorted(failures):
+        for name, kind, case, _ in sorted(failures):
             print(f"  {name}: {kind} at {case}")
+
+        # The report, not just the verdict. Under a sanitizer this is the
+        # stack trace naming the offending line.
+        for name, kind, case, diagnostics in sorted(failures):
+            if not diagnostics.strip():
+                continue
+            print(f"\n----- {name} ({kind} at {case}) -----")
+            lines = diagnostics.strip().splitlines()
+            for line in lines[:40]:
+                print(f"  {line}")
+            if len(lines) > 40:
+                print(f"  ... {len(lines) - 40} more lines")
         return 1
     print("no crashes, no hangs")
     return 0

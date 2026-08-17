@@ -3375,7 +3375,7 @@ def reverb(Buffer buf not None, double mix=0.5, double decay_time=2.0,
     _in_range(decay_time, "decay_time", 0.0, MAX_DURATION_S)
     _finite(damping, "damping")
     _finite(lpfreq, "lpfreq")
-    _finite(predelay, "predelay")
+    _at_most(predelay, "predelay", MAX_TIME_MS)
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -4657,7 +4657,7 @@ def morph_bridge_native(Buffer buf1 not None, Buffer buf2 not None,
     Raises:
         CDPError: If processing fails.
     """
-    _finite(offset, "offset")
+    _in_range(offset, "offset", -MAX_DURATION_S, MAX_DURATION_S)
     _finite(interp_start, "interp_start")
     _finite(interp_end, "interp_end")
     if buf1.sample_rate != buf2.sample_rate:
@@ -4712,7 +4712,7 @@ def morph_native(Buffer buf1 not None, Buffer buf2 not None,
     _finite(freq_end, "freq_end")
     _finite(amp_exp, "amp_exp")
     _finite(freq_exp, "freq_exp")
-    _finite(stagger, "stagger")
+    _in_range(stagger, "stagger", -MAX_DURATION_S, MAX_DURATION_S)
     if buf1.sample_rate != buf2.sample_rate:
         raise ValueError("Sample rates must match for morph")
 
@@ -4758,8 +4758,8 @@ def pitch(Buffer buf not None, double min_freq=50.0, double max_freq=2000.0,
     Raises:
         CDPError: If processing fails.
     """
-    _finite(min_freq, "min_freq")
-    _finite(max_freq, "max_freq")
+    _in_range(min_freq, "min_freq", 1.0, 20000.0)
+    _in_range(max_freq, "max_freq", 1.0, 20000.0)
     cdef cdp_lib_ctx* ctx = _get_cdp_lib_ctx()
     cdef cdp_lib_buffer* input_buf = _buffer_to_cdp_lib(buf)
 
@@ -5096,7 +5096,7 @@ def bounce(Buffer buf not None, int bounces=8, double initial_delay=0.5,
     Raises:
         CDPError: If processing fails.
     """
-    _finite(initial_delay, "initial_delay")
+    _in_range(initial_delay, "initial_delay", 0.0, MAX_DURATION_S)
     _finite(shrink, "shrink")
     _finite(end_level, "end_level")
     _finite(level_curve, "level_curve")

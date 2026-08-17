@@ -21,6 +21,21 @@
 #include <string.h>
 #include <math.h>
 
+/* cdp_spectral_analyze's accepted range; mirrored here so the power-of-2
+ * rounding below cannot overflow on the way to being rejected. */
+#define CDP_MIN_FFT_SIZE 64
+#define CDP_MAX_FFT_SIZE 8192
+
+/* Saturate a double into int's range. A plain cast is undefined behaviour when
+ * the value does not fit, which UBSan reports and which x86-64 resolves to
+ * INT_MIN. */
+static double cdp_clamp_to_int(double v) {
+    if (!(v == v)) return 0.0;              /* NaN */
+    if (v > 2147483000.0) return 2147483000.0;
+    if (v < -2147483000.0) return -2147483000.0;
+    return v;
+}
+
 /* Log base 2 constant (from CDP globcon.h) */
 #ifndef LOG10_OF_2
 #define LOG10_OF_2 0.301029995
@@ -45,7 +60,11 @@ cdp_lib_buffer* cdp_morph_glide_native(cdp_lib_ctx* ctx,
     if (duration <= 0) duration = 1.0;
     if (fft_size <= 0) fft_size = 1024;
 
-    /* Ensure power of 2 */
+    /* Ensure power of 2. Clamped first: `n *= 2` is signed overflow once the
+     * request passes 2^30, and cdp_spectral_analyze rejects anything outside
+     * this range anyway. */
+    if (fft_size < CDP_MIN_FFT_SIZE) fft_size = CDP_MIN_FFT_SIZE;
+    if (fft_size > CDP_MAX_FFT_SIZE) fft_size = CDP_MAX_FFT_SIZE;
     int n = 1;
     while (n < fft_size) n *= 2;
     fft_size = n;
@@ -287,7 +306,11 @@ cdp_lib_buffer* cdp_morph_bridge_native(cdp_lib_ctx* ctx,
     if (interp_end > 1) interp_end = 1;
     if (fft_size <= 0) fft_size = 1024;
 
-    /* Ensure power of 2 */
+    /* Ensure power of 2. Clamped first: `n *= 2` is signed overflow once the
+     * request passes 2^30, and cdp_spectral_analyze rejects anything outside
+     * this range anyway. */
+    if (fft_size < CDP_MIN_FFT_SIZE) fft_size = CDP_MIN_FFT_SIZE;
+    if (fft_size > CDP_MAX_FFT_SIZE) fft_size = CDP_MAX_FFT_SIZE;
     int n = 1;
     while (n < fft_size) n *= 2;
     fft_size = n;
@@ -336,8 +359,10 @@ cdp_lib_buffer* cdp_morph_bridge_native(cdp_lib_ctx* ctx,
     int num_bins = spec1->num_bins;
     int hop_size = fft_size / 4;
 
-    /* Calculate offset in frames */
-    int offset_frames = (int)(offset * sample_rate / hop_size);
+    /* Calculate offset in frames. Clamped before the cast: converting a
+     * double outside int's range is undefined behaviour, and offset is a
+     * caller-supplied number of seconds. */
+    int offset_frames = (int)cdp_clamp_to_int(offset * sample_rate / hop_size);
 
     /* Determine output length (max of both inputs considering offset) */
     int output_frames = spec1->num_frames;
@@ -504,7 +529,11 @@ cdp_lib_buffer* cdp_morph_morph_native(cdp_lib_ctx* ctx,
     if (freq_exp <= 0) freq_exp = 1.0;
     if (fft_size <= 0) fft_size = 1024;
 
-    /* Ensure power of 2 */
+    /* Ensure power of 2. Clamped first: `n *= 2` is signed overflow once the
+     * request passes 2^30, and cdp_spectral_analyze rejects anything outside
+     * this range anyway. */
+    if (fft_size < CDP_MIN_FFT_SIZE) fft_size = CDP_MIN_FFT_SIZE;
+    if (fft_size > CDP_MAX_FFT_SIZE) fft_size = CDP_MAX_FFT_SIZE;
     int n = 1;
     while (n < fft_size) n *= 2;
     fft_size = n;
@@ -553,8 +582,8 @@ cdp_lib_buffer* cdp_morph_morph_native(cdp_lib_ctx* ctx,
     int num_bins = spec1->num_bins;
     int hop_size = fft_size / 4;
 
-    /* Calculate stagger in frames */
-    int stagger_frames = (int)(stagger * sample_rate / hop_size);
+    /* Calculate stagger in frames; clamped before the cast, as above. */
+    int stagger_frames = (int)cdp_clamp_to_int(stagger * sample_rate / hop_size);
 
     /* Output frames = max considering stagger */
     int output_frames = spec1->num_frames;

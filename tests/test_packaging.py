@@ -143,6 +143,16 @@ class TestExtensionSymbolVisibility:
     """
 
     def _exported(self):
+        """Symbols the built extension publishes to the rest of the process.
+
+        The flags differ by object format and it matters which table is read.
+        On ELF the exports live in the *dynamic* symbol table, and `nm -g`
+        reads `.symtab`, which a shared object need not carry at all -- so the
+        obvious invocation returns nothing on Linux. That is worse than an
+        error: an empty set silently satisfies "only PyInit is exported", and
+        this check passed in CI for a release cycle while measuring nothing.
+        Hence -D there, and the emptiness guard below.
+        """
         import subprocess
 
         import cycdp._core as core
@@ -150,18 +160,29 @@ class TestExtensionSymbolVisibility:
         so = Path(core.__file__)
         if sys.platform == "win32":
             pytest.skip("no nm on Windows; DLL exports are governed differently")
+
+        # -D: dynamic symbols (ELF). BSD/llvm nm on macOS has no -D and reads
+        # the Mach-O symbol table with -gU, which is the equivalent view.
+        flags = ["-gU"] if sys.platform == "darwin" else ["-D", "--defined-only"]
         try:
             out = subprocess.run(
-                ["nm", "-g", "--defined-only", str(so)],
+                ["nm", *flags, str(so)],
                 capture_output=True,
                 text=True,
                 check=True,
             ).stdout
         except (FileNotFoundError, subprocess.CalledProcessError):
             pytest.skip("nm unavailable")
-        return {
+
+        symbols = {
             line.split()[-1].lstrip("_") for line in out.splitlines() if line.strip()
         }
+        assert symbols, (
+            f"nm {' '.join(flags)} listed no symbols at all for {so.name}. The "
+            f"checks below would pass vacuously, so fail here instead: the "
+            f"wrong symbol table is being read for this object format."
+        )
+        return symbols
 
     def test_only_the_module_init_is_exported(self):
         exported = self._exported()

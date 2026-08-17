@@ -12,6 +12,19 @@ A minor rather than a patch release: several changes reject input that previousl
 
 ### Fixed
 
+- Six defects found by the ASan fuzz job on its first CI run, none of which reproduce uninstrumented -- the point of running the sweep under a sanitizer. Two are memory errors:
+
+  - `delay` with a sub-sample delay time computed a zero-length delay line, then read and wrote `delay_buf[ch][write_pos]` from it. `calloc(0, n)` returns a non-NULL zero-byte block, so this silently corrupted the heap without instrumentation. Same shape as the reverb delay-line defect fixed above; the line is now at least one sample.
+  - `pitch` with a `min_freq` above the sample rate collapsed the YIN lag range to zero, giving a zero-byte search buffer that `yin_difference` then wrote into. An empty or inverted lag range is now an error naming the range, rather than a search of nothing.
+
+  Two were undefined behaviour on a float-to-int conversion: `morph_bridge_native`'s `offset` and `morph_native`'s `stagger` were cast to `int` without a range check, which x86-64 resolves to `INT_MIN`. Both clamp first. `morph_glide_native` overflowed a signed int in the power-of-2 rounding of `fft_size` (`n *= 2` past 2^30); the size is clamped to the range the analysis accepts before rounding. `bounce` with a large `initial_delay` requested a 500 TB allocation.
+
+  The parameters behind them -- `initial_delay`, `predelay`, `offset`, `stagger`, `min_freq`, `max_freq` -- are now bounded in the Cython layer like the rest, so they fail with a named `ValueError` rather than reaching the C layer at all.
+
+- The fuzz harness prints the failing worker's stderr. It reported which call failed but not why, discarding the sanitizer report that is most of the reason to run the sweep under ASan.
+
+- `tests/test_packaging.py` read the wrong symbol table on ELF. `nm -g` reads `.symtab`, which a shared object need not carry, so on Linux it listed nothing -- and an empty set trivially satisfies "only PyInit is exported", meaning the check passed in CI while measuring nothing. It now uses `nm -D` on ELF and fails outright if no symbols are listed, so a tooling mismatch cannot masquerade as a pass.
+
 - The phase vocoder is ported from CDP's own (`dev/pv/pvoc.c`), which fixes four operations at once and explains why they were broken.
 
   Our analysis copied each frame straight into the transform buffer. CDP folds it in **rotated by `n mod N`**, which references the phase to absolute time: a partial sitting exactly on a bin centre then shows no advance between hops, so the raw phase difference already *is* the deviation from that centre. Without the rotation every bin advances by `i * expect` per hop, which the analysis has to subtract back out -- self-consistent, but it leaves the bin index carrying no information the synthesis can use. The synthesis correspondingly accumulated the absolute frequency where CDP accumulates only the deviation (`oldOutPhase[i] += freq[i] - i*F`), so bin index and phase accumulator both encoded position and double-counted. Moving amplitude between bins therefore did not move the sound: a translation was coherent only in multiples of `fft_size / (2 * hop)` bins and cancelled everywhere in between.
