@@ -1259,6 +1259,7 @@ cdef extern from "cdp_lib.h" nogil:
     cdp_lib_ctx* cdp_lib_init()
     cdp_lib_ctx* cdp_lib_thread_ctx()
     void cdp_lib_release_thread_ctx()
+    long long cdp_lib_live_thread_contexts()
     void cdp_lib_cleanup(cdp_lib_ctx* ctx)
     const char* cdp_lib_get_error(cdp_lib_ctx* ctx)
 
@@ -2088,6 +2089,17 @@ cdef cdp_lib_ctx* _get_cdp_lib_ctx() except NULL:
     if ctx is NULL:
         raise MemoryError("Failed to initialize CDP library")
     return ctx
+
+
+def _live_thread_contexts():
+    """Number of per-thread processing contexts currently alive.
+
+    Diagnostic, for tests. Public only because the alternative -- inferring it
+    from process memory -- is not reliable: inside a manylinux container the
+    allocator's own per-thread growth measured 87 MB against the 1 MB that
+    leaking every context would produce, so the proxy could not see the signal.
+    """
+    return cdp_lib_live_thread_contexts()
 
 
 def release_thread_context():

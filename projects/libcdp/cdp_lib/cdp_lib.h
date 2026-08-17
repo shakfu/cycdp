@@ -1049,6 +1049,15 @@ cdp_lib_ctx* cdp_lib_thread_ctx(void);
  */
 void cdp_lib_release_thread_ctx(void);
 
+/*
+ * Number of thread contexts currently alive, across all threads.
+ *
+ * Diagnostic. Exists so that the thread-exit destructor can be verified
+ * directly rather than inferred from process memory, which other per-thread
+ * allocations swamp.
+ */
+long long cdp_lib_live_thread_contexts(void);
+
 #ifdef __cplusplus
 }
 #endif

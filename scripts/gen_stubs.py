@@ -71,6 +71,7 @@ RETURNS = {
     "get_peak": "tuple[float, int]",
     "peak": "tuple[float, int]",
     "split_channels": "list[Buffer]",
+    "_live_thread_contexts": "int",
     "release_thread_context": "None",
     "write_file": "None",
 }

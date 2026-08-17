@@ -20,7 +20,6 @@ from __future__ import annotations
 import array
 import concurrent.futures as cf
 import math
-import sys
 import threading
 import time
 from typing import ClassVar
@@ -59,39 +58,6 @@ def _coverage_is_tracing() -> bool:
     except ImportError:
         return False
     return coverage.Coverage.current() is not None
-
-
-def _sanitizer_is_active() -> bool:
-    """True when ASan or TSan is loaded into this interpreter.
-
-    Both keep per-thread shadow memory and a quarantine that they never return
-    to the OS, so process RSS grows by hundreds of megabytes over a few
-    thousand threads regardless of whether the library leaks anything. Any
-    RSS-based measurement is meaningless under them -- measured at 212 MB of
-    sanitizer bookkeeping against the ~1 MB the leak test is looking for.
-
-    Runs at import time, because a skipif decorator evaluates then. That makes
-    it worth being defensive: an exception here is a collection error that
-    takes the whole module down rather than one failing test, which is what it
-    did on Windows, where ctypes.CDLL(None) -- "the current process", a POSIX
-    dlopen convention -- raises. There is nothing to detect there anyway; the
-    build refuses to combine MSVC with either sanitizer.
-    """
-    import ctypes
-
-    if sys.platform == "win32":
-        return False
-    try:
-        process = ctypes.CDLL(None)
-    except (OSError, TypeError):  # pragma: no cover - platform dependent
-        return False
-    for symbol in ("__asan_init", "__tsan_init"):
-        try:
-            getattr(process, symbol)
-        except AttributeError:
-            continue
-        return True
-    return False
 
 
 class TestGilIsReleased:
@@ -401,55 +367,94 @@ class TestThreadContextLifetime:
     the process, once per thread that ever called in. Harmless for a fixed
     worker pool; an unbounded leak for a thread-per-request server. The fix is
     a pthread key destructor (FLS on Windows).
+
+    Measured by counting live contexts rather than by watching process memory.
+    The RSS version of this test passed everywhere it was developed and failed
+    inside a manylinux container, where glibc's per-thread arenas and stack
+    cache grew 87 MB over 2,000 threads -- against the 1 MB that leaking every
+    context would produce. The signal was two orders of magnitude under the
+    noise, so the proxy was measuring the allocator, not the library.
     """
 
-    THREADS = 2000
+    THREADS = 500
 
-    def _peak_rss_kb(self):
-        import resource
-        import sys
+    @staticmethod
+    def live():
+        return cycdp._core._live_thread_contexts()
 
-        r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        # macOS reports bytes, Linux kilobytes.
-        return r // 1024 if sys.platform == "darwin" else r
+    def test_a_thread_releases_its_context_when_it_exits(self, audio):
+        before = self.live()
 
-    @pytest.mark.skipif(
-        _sanitizer_is_active(),
-        reason="sanitizer shadow memory swamps the measurement; see _sanitizer_is_active",
-    )
+        done = threading.Event()
+
+        def work():
+            cycdp.bitcrush(audio)
+            done.set()
+
+        t = threading.Thread(target=work)
+        t.start()
+        t.join()
+        assert done.is_set()
+
+        assert self.live() == before, (
+            "a thread that used the library still holds a context after "
+            "exiting; the thread-exit destructor is not firing"
+        )
+
     def test_short_lived_threads_do_not_accumulate_contexts(self, audio):
-        pytest.importorskip("resource", reason="POSIX-only measurement")
-        import gc
+        before = self.live()
 
         def work():
             cycdp.bitcrush(audio)
 
-        # Warm up: the first calls fault in pages that would otherwise be
-        # counted against the measured window.
-        for _ in range(20):
-            t = threading.Thread(target=work)
-            t.start()
-            t.join()
-
-        gc.collect()
-        before = self._peak_rss_kb()
         for _ in range(self.THREADS):
             t = threading.Thread(target=work)
             t.start()
             t.join()
-        gc.collect()
-        growth = self._peak_rss_kb() - before
 
-        # ru_maxrss is a high-water mark, so this only ever detects growth --
-        # exactly what a leak is. One leaked context per thread would be about
-        # 1 MB at this thread count; the bound is set well below that and well
-        # above the ~80 KB of allocator noise actually observed.
-        leaked_kb = self.THREADS * 528 // 1024
-        assert growth < leaked_kb // 2, (
-            f"peak RSS grew {growth} KB over {self.THREADS} short-lived "
-            f"threads; leaking one context per thread would be about "
-            f"{leaked_kb} KB, so the thread-exit destructor is not firing"
+        assert self.live() == before, (
+            f"{self.live() - before} contexts survived {self.THREADS} "
+            f"short-lived threads; each is a permanent leak"
         )
+
+    def test_a_context_is_created_on_first_use(self, audio):
+        """The counter has to move, or the checks above prove nothing."""
+        results = []
+
+        def work():
+            results.append(self.live())
+            cycdp.bitcrush(audio)
+            results.append(self.live())
+
+        t = threading.Thread(target=work)
+        t.start()
+        t.join()
+
+        before_call, after_call = results
+        assert after_call == before_call + 1, (
+            "using the library from a new thread should create exactly one "
+            "context; if it does not, the leak tests are vacuous"
+        )
+
+    def test_concurrent_threads_each_get_their_own(self, audio):
+        """Contexts are per-thread, so N workers means N contexts."""
+        before = self.live()
+        peak = []
+        barrier = threading.Barrier(8)
+
+        def work():
+            cycdp.bitcrush(audio)
+            barrier.wait()  # hold every thread alive at once
+            peak.append(self.live())
+
+        threads = [threading.Thread(target=work) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert max(peak) == before + 8
+        assert self.live() == before, "all eight should be released on exit"
 
     def test_release_thread_context_is_safe_to_call_anytime(self):
         """Including with no context, twice, and before further work."""
@@ -460,6 +465,16 @@ class TestThreadContextLifetime:
         cycdp.release_thread_context()
         # A fresh context must be created transparently.
         assert cycdp.bitcrush(buf).frame_count > 0
+
+    def test_release_drops_exactly_one_context(self):
+        cycdp.bitcrush(cycdp.Buffer.create(1024, 1, 44100))
+        before = self.live()
+        assert before >= 1
+        cycdp.release_thread_context()
+        assert self.live() == before - 1
+        # Releasing again must not go negative or double-free.
+        cycdp.release_thread_context()
+        assert self.live() == before - 1
 
     def test_release_does_not_break_seeded_reproducibility(self):
         """A seeded operation is seeded per call, not per context."""
@@ -494,6 +509,10 @@ class TestThreadSafetyClaimHolds:
         ("cdp_lib.c", "cdp_tls_key_ok"),
         ("cdp_lib.c", "cdp_fls_index"),
         ("cdp_lib.c", "cdp_fls_once"),
+        # Live-context counter, read and written atomically. Shared by
+        # construction -- a per-thread counter could not report a total -- and
+        # diagnostic only: nothing in a processing path reads it.
+        ("cdp_lib.c", "cdp_live_contexts"),
         # Process-wide I/O slots. Unreachable: nothing outside cdp_shim.c
         # calls into it. Would need thread-local storage before being used.
         ("cdp_shim.c", "g_input_slots"),

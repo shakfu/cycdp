@@ -59,14 +59,41 @@ cdp_lib_ctx* cdp_lib_init(void) {
 
 static CDP_THREAD_LOCAL cdp_lib_ctx* cdp_tls_ctx = NULL;
 
+/* Count of contexts currently alive across all threads.
+ *
+ * Exists so the destructor can be tested directly. The test used to infer it
+ * from process RSS over a few thousand short-lived threads, which works only
+ * where the allocator does not itself grow per thread: inside a manylinux
+ * container it measured 87 MB of glibc arena and stack-cache growth against
+ * the 1 MB a leak of every context would produce, so the signal was two orders
+ * of magnitude below the noise. Counting the objects removes the proxy.
+ *
+ * Atomic because threads create and destroy contexts concurrently; a plain
+ * long here would be a data race, and ThreadSanitizer runs this code. */
 #if defined(_WIN32)
+#  include <windows.h>   /* before the accessor below, which uses these */
+#  define CDP_ATOMIC_INC(p) InterlockedIncrement64((volatile LONG64*)(p))
+#  define CDP_ATOMIC_DEC(p) InterlockedDecrement64((volatile LONG64*)(p))
+#  define CDP_ATOMIC_GET(p) InterlockedCompareExchange64((volatile LONG64*)(p), 0, 0)
+#else
+#  define CDP_ATOMIC_INC(p) __atomic_add_fetch((p), 1, __ATOMIC_RELAXED)
+#  define CDP_ATOMIC_DEC(p) __atomic_sub_fetch((p), 1, __ATOMIC_RELAXED)
+#  define CDP_ATOMIC_GET(p) __atomic_load_n((p), __ATOMIC_RELAXED)
+#endif
 
-#include <windows.h>
+static long long cdp_live_contexts = 0;
+
+long long cdp_lib_live_thread_contexts(void) {
+    return (long long)CDP_ATOMIC_GET(&cdp_live_contexts);
+}
+
+#if defined(_WIN32)
 
 static DWORD cdp_fls_index = FLS_OUT_OF_INDEXES;
 static INIT_ONCE cdp_fls_once = INIT_ONCE_STATIC_INIT;
 
 static void WINAPI cdp_tls_destroy(void* p) {
+    if (p) CDP_ATOMIC_DEC(&cdp_live_contexts);
     free(p);
 }
 
@@ -98,6 +125,7 @@ static pthread_once_t cdp_tls_once = PTHREAD_ONCE_INIT;
 static int cdp_tls_key_ok = 0;
 
 static void cdp_tls_destroy(void* p) {
+    if (p) CDP_ATOMIC_DEC(&cdp_live_contexts);
     free(p);
 }
 
@@ -123,6 +151,7 @@ cdp_lib_ctx* cdp_lib_thread_ctx(void) {
     if (cdp_tls_ctx == NULL) {
         cdp_lib_ctx* ctx = cdp_lib_init();
         if (ctx == NULL) return NULL;
+        CDP_ATOMIC_INC(&cdp_live_contexts);
         if (cdp_tls_register(ctx) != 0) {
             /* No destructor hook available. Still hand back a working context
              * -- refusing to process because cleanup cannot be automated would
@@ -141,6 +170,7 @@ void cdp_lib_release_thread_ctx(void) {
     cdp_tls_unregister();  /* so the destructor does not free it twice */
     free(cdp_tls_ctx);
     cdp_tls_ctx = NULL;
+    CDP_ATOMIC_DEC(&cdp_live_contexts);
 }
 
 void cdp_lib_cleanup(cdp_lib_ctx* ctx) {

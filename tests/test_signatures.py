@@ -260,6 +260,7 @@ class TestReturnTypesMatchRuntime:
                 lambda: cycdp.release_thread_context(),
                 type(None),
             ),
+            "_live_thread_contexts": (lambda: core._live_thread_contexts(), int),
         }
 
     def test_declared_return_types_are_actual_return_types(self):
