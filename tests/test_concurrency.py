@@ -20,6 +20,7 @@ from __future__ import annotations
 import array
 import concurrent.futures as cf
 import math
+import sys
 import threading
 import time
 from typing import ClassVar
@@ -68,10 +69,22 @@ def _sanitizer_is_active() -> bool:
     thousand threads regardless of whether the library leaks anything. Any
     RSS-based measurement is meaningless under them -- measured at 212 MB of
     sanitizer bookkeeping against the ~1 MB the leak test is looking for.
+
+    Runs at import time, because a skipif decorator evaluates then. That makes
+    it worth being defensive: an exception here is a collection error that
+    takes the whole module down rather than one failing test, which is what it
+    did on Windows, where ctypes.CDLL(None) -- "the current process", a POSIX
+    dlopen convention -- raises. There is nothing to detect there anyway; the
+    build refuses to combine MSVC with either sanitizer.
     """
     import ctypes
 
-    process = ctypes.CDLL(None)
+    if sys.platform == "win32":
+        return False
+    try:
+        process = ctypes.CDLL(None)
+    except (OSError, TypeError):  # pragma: no cover - platform dependent
+        return False
     for symbol in ("__asan_init", "__tsan_init"):
         try:
             getattr(process, symbol)

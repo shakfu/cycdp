@@ -501,16 +501,24 @@ class TestBufferProtocolHonoursFlags:
 
     @contextlib.contextmanager
     def _view(self, buf, flags):
+        # Looked up rather than assumed: these are ordinary C-API exports and
+        # should resolve everywhere, but a missing one should skip with a
+        # reason rather than raise an AttributeError that reads like a defect
+        # in the buffer protocol.
+        try:
+            get_buffer = ctypes.pythonapi.PyObject_GetBuffer
+            release = ctypes.pythonapi.PyBuffer_Release
+        except AttributeError:  # pragma: no cover - platform dependent
+            pytest.skip("PyObject_GetBuffer is not reachable through ctypes here")
+
         view = self._PyBuffer()
-        rc = ctypes.pythonapi.PyObject_GetBuffer(
-            ctypes.py_object(buf), ctypes.byref(view), ctypes.c_int(flags)
-        )
+        rc = get_buffer(ctypes.py_object(buf), ctypes.byref(view), ctypes.c_int(flags))
         if rc != 0:
             raise BufferError(f"PyObject_GetBuffer failed for flags {flags:#x}")
         try:
             yield view
         finally:
-            ctypes.pythonapi.PyBuffer_Release(ctypes.byref(view))
+            release(ctypes.byref(view))
 
     @pytest.fixture
     def buf(self):

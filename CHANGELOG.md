@@ -21,6 +21,8 @@ A minor rather than a patch release: several changes reject input that previousl
 
   The parameters behind them -- `initial_delay`, `predelay`, `offset`, `stagger`, `min_freq`, `max_freq` -- are now bounded in the Cython layer like the rest, so they fail with a named `ValueError` rather than reaching the C layer at all.
 
+- Two tests assumed POSIX. `tests/test_concurrency.py` called `ctypes.CDLL(None)` -- the dlopen convention for "the current process" -- from a `skipif` decorator, so on Windows it raised at import and took the whole module down as a collection error, hiding every other result in that job. It returns False there instead; the build refuses to combine MSVC with a sanitizer, so there is nothing to detect. The buffer-protocol test now looks up its C-API entry points rather than assuming them, and skips with a reason if one is unreachable.
+
 - The fuzz harness prints the failing worker's stderr. It reported which call failed but not why, discarding the sanitizer report that is most of the reason to run the sweep under ASan.
 
 - `tests/test_packaging.py` read the wrong symbol table on ELF. `nm -g` reads `.symtab`, which a shared object need not carry, so on Linux it listed nothing -- and an empty set trivially satisfies "only PyInit is exported", meaning the check passed in CI while measuring nothing. It now uses `nm -D` on ELF and fails outright if no symbols are listed, so a tooling mismatch cannot masquerade as a pass.
