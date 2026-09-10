@@ -75,7 +75,7 @@ fi
 # Overwrite the installed extension in place, keeping whatever filename it
 # already has, and put the original back on exit however this script ends.
 #
-# Using the *installed* name rather than the built one is load-bearing. The
+# Using the *installed* name rather than the built one is structural. The
 # project is installed editable, and scikit-build-core's editable finder
 # hardcodes the extension path -- {'cycdp._core': 'cycdp/_core.cpython-313-darwin.so'}
 # in _editable_skbc_cycdp.py -- so the module resolves by that exact name and

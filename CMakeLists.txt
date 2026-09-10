@@ -293,7 +293,7 @@ endif()
 if(CYCDP_COVERAGE)
     # CYTHON_TRACE_NOGIL implies CYTHON_TRACE and also traces nogil blocks.
     #
-    # CYTHON_USE_SYS_MONITORING=0 is the load-bearing part on Python 3.12+.
+    # CYTHON_USE_SYS_MONITORING=0 is the structural part on Python 3.12+.
     # Cython otherwise instruments via PEP 669 sys.monitoring, but coverage.py
     # only supports file_tracer plugins (which is how Cython.Coverage maps
     # .pyx lines) on its settrace-based cores. The two never meet, and the
