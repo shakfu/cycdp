@@ -8,70 +8,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- Wheels are now built against the CPython stable ABI (abi3). One
-  `cp311-abi3` wheel per platform replaces the five version-specific wheels
-  that were built before, and it installs on 3.11 and every later interpreter
-  -- including ones released after the wheel was, which previously had to wait
-  for a new build.
+- Wheels are now built against the CPython stable ABI (abi3). One `cp311-abi3` wheel per platform replaces the five version-specific wheels that were built before, and it installs on 3.11 and every later interpreter -- including ones released after the wheel was, which previously had to wait for a new build.
 
-  This raises the floor to **Python 3.11**, dropping 3.10. The buffer protocol
-  (`Py_buffer`, `PyObject_GetBuffer`, the `bf_getbuffer` slot) only entered the
-  stable ABI in 3.11; compiling against 3.10 fails with 20 errors, every one
-  `unknown type name 'Py_buffer'`. `Buffer.__getbuffer__` and every
-  `float[::1]` parameter are the zero-copy interop the library is built around,
-  so there is no version of this that keeps 3.10. Python 3.10 reaches
-  end-of-life in October 2026.
+  This raises the floor to **Python 3.11**, dropping 3.10. The buffer protocol (`Py_buffer`, `PyObject_GetBuffer`, the `bf_getbuffer` slot) only entered the stable ABI in 3.11; compiling against 3.10 fails with 20 errors, every one `unknown type name 'Py_buffer'`. `Buffer.__getbuffer__` and every `float[::1]` parameter are the zero-copy interop the library is built around, so there is no version of this that keeps 3.10. Python 3.10 reaches end-of-life in October 2026.
 
-  Measured cost: none for the DSP itself, which runs in C either way
-  (`time_stretch` on a 1-second buffer, 12.7 ms to 13.1 ms; `reverb`
-  unchanged within noise). Per-call overhead grows about 0.16 us as the limited
-  API replaces refcount macros with function calls -- 0.5 to 0.7 us for `gain`
-  on a 64-sample buffer, which at 44.1 kHz block rate is roughly 0.01% of a
-  core. Indexing and `memoryview()` are unaffected.
+  Measured cost: none for the DSP itself, which runs in C either way (`time_stretch` on a 1-second buffer, 12.7 ms to 13.1 ms; `reverb` unchanged within noise). Per-call overhead grows about 0.16 us as the limited API replaces refcount macros with function calls -- 0.5 to 0.7 us for `gain` on a 64-sample buffer, which at 44.1 kHz block rate is roughly 0.01% of a core. Indexing and `memoryview()` are unaffected.
 
-  The coverage build opts out and keeps the version-specific ABI, because
-  Cython's line tracing reaches into `PyFrameObject`, which the limited API
-  does not expose. That build is never shipped and measures the same source.
+  The coverage build opts out and keeps the version-specific ABI, because Cython's line tracing reaches into `PyFrameObject`, which the limited API does not expose. That build is never shipped and measures the same source.
 
-  Configuration for this lives in five places that must agree -- `USE_SABI` in
-  CMakeLists.txt, `wheel.py-api` and `requires-python` in pyproject.toml, the
-  CI matrix floor, and `CIBW_BUILD` -- and `tests/test_packaging.py` now
-  asserts they do. A wheel tagged `cp311-abi3` refuses to install below 3.11,
-  so a floor that disagrees with the compiled ABI level is an ImportError for
-  whoever installs at the boundary, not a documentation slip.
+  Configuration for this lives in five places that must agree -- `USE_SABI` in CMakeLists.txt, `wheel.py-api` and `requires-python` in pyproject.toml, the CI matrix floor, and `CIBW_BUILD` -- and `tests/test_packaging.py` now asserts they do. A wheel tagged `cp311-abi3` refuses to install below 3.11, so a floor that disagrees with the compiled ABI level is an ImportError for whoever installs at the boundary, not a documentation slip.
 
 ### Fixed
 
-- `scripts/run_sanitizers.sh` could leave an instrumented, sanitizer-linked
-  extension permanently installed, and could make the interpreter import a
-  stale module. It installed the instrumented build under the *built*
-  filename, backing up whatever already occupied that name -- correct only
-  while every build variant produced the same name. Under abi3 they no longer
-  do: an ordinary build produces `_core.abi3.so` and a coverage build
-  `_core.cpython-3XY-<plat>.so`. When the two disagreed, nothing was backed up
-  (so the restore on exit was a no-op) and both files ended up installed at
-  once. `.cpython-3XY-<plat>.so` precedes `.abi3.so` in
-  `importlib.machinery.EXTENSION_SUFFIXES`, so the leftover won every import
-  and the suite silently measured the wrong artifact.
+- `scripts/run_sanitizers.sh` could leave an instrumented, sanitizer-linked extension permanently installed, and could make the interpreter import a stale module. It installed the instrumented build under the *built* filename, backing up whatever already occupied that name -- correct only while every build variant produced the same name. Under abi3 they no longer do: an ordinary build produces `_core.abi3.so` and a coverage build `_core.cpython-3XY-<plat>.so`. When the two disagreed, nothing was backed up (so the restore on exit was a no-op) and both files ended up installed at once. `.cpython-3XY-<plat>.so` precedes `.abi3.so` in `importlib.machinery.EXTENSION_SUFFIXES`, so the leftover won every import and the suite silently measured the wrong artifact.
 
-  It now overwrites the installed extension in place under whatever name it
-  already has, which is also required for correctness: the project is
-  installed editable and scikit-build-core's finder pins the extension path at
-  install time, so a module written under any other name is simply never
-  loaded. It refuses to run if zero or more than one extension is installed,
-  and `tests/test_packaging.py` fails if a second one ever appears.
+  It now overwrites the installed extension in place under whatever name it already has, which is also required for correctness: the project is installed editable and scikit-build-core's finder pins the extension path at install time, so a module written under any other name is simply never loaded. It refuses to run if zero or more than one extension is installed, and `tests/test_packaging.py` fails if a second one ever appears.
 
-- `test_threads_give_real_speedup` conflated two different things: whether the
-  GIL is released, and how many cores the runner happened to provide. It took a
-  single sequential-versus-threaded measurement and required 1.5x, so a busy
-  shared macOS runner failed it at 1.41x while the same build measured 3.5x on
-  an idle machine. It now takes the best of three attempts, matching what
-  `test_python_threads_keep_running_during_dsp` already did for the same
-  reason: contention can only depress the ratio, never inflate it, so the
-  maximum is the honest measure of whether the calls overlap at all. The 1.5x
-  bound is unchanged and the test keeps full power against the defect it exists
-  to catch -- with the calls serialised to stand in for a GIL-holding build,
-  best-of-three measures 1.01x and still fails.
+- `test_threads_give_real_speedup` conflated two different things: whether the GIL is released, and how many cores the runner happened to provide. It took a single sequential-versus-threaded measurement and required 1.5x, so a busy shared macOS runner failed it at 1.41x while the same build measured 3.5x on an idle machine. It now takes the best of three attempts, matching what `test_python_threads_keep_running_during_dsp` already did for the same reason: contention can only depress the ratio, never inflate it, so the maximum is the honest measure of whether the calls overlap at all. The 1.5x bound is unchanged and the test keeps full power against the defect it exists to catch -- with the calls serialised to stand in for a GIL-holding build, best-of-three measures 1.01x and still fails.
 
 ## [0.3.0]
 
@@ -82,6 +35,7 @@ A minor rather than a patch release: several changes reject input that previousl
 - Six defects found by the ASan fuzz job on its first CI run, none of which reproduce uninstrumented -- the point of running the sweep under a sanitizer. Two are memory errors:
 
   - `delay` with a sub-sample delay time computed a zero-length delay line, then read and wrote `delay_buf[ch][write_pos]` from it. `calloc(0, n)` returns a non-NULL zero-byte block, so this silently corrupted the heap without instrumentation. Same shape as the reverb delay-line defect fixed above; the line is now at least one sample.
+
   - `pitch` with a `min_freq` above the sample rate collapsed the YIN lag range to zero, giving a zero-byte search buffer that `yin_difference` then wrote into. An empty or inverted lag range is now an error naming the range, rather than a search of nothing.
 
   Two were undefined behaviour on a float-to-int conversion: `morph_bridge_native`'s `offset` and `morph_native`'s `stagger` were cast to `int` without a range check, which x86-64 resolves to `INT_MIN`. Both clamp first. `morph_glide_native` overflowed a signed int in the power-of-2 rounding of `fft_size` (`n *= 2` past 2^30); the size is clamped to the range the analysis accepts before rounding. `bounce` with a large `initial_delay` requested a 500 TB allocation.
@@ -124,7 +78,7 @@ A minor rather than a patch release: several changes reject input that previousl
 
 - Four saturating fixes in `cdp_granular_ext.c` where `write_pos += g->length - splice_len` could underflow a `size_t` and skip the rest of the output.
 
-- The WAV reader validated the audio format and bit depth but trusted every other header field. A `fmt ` chunk declaring zero channels made the frame size zero and the frame-count division an integer division by zero -- SIGFPE on x86-64, which kills the process; `cdp_buffer_create` rejects zero channels, but one line too late. A declared `data` size larger than the file turned four bytes into an arbitrary allocation (a 100-byte file requesting 4 GB). An absurd-but-positive sample rate survived into every downstream operation, where delay lines and output lengths scale with it. Channel count, sample rate and chunk size are now bounded against the file.
+- The WAV reader validated the audio format and bit depth but trusted every other header field. A `fmt` chunk declaring zero channels made the frame size zero and the frame-count division an integer division by zero -- SIGFPE on x86-64, which kills the process; `cdp_buffer_create` rejects zero channels, but one line too late. A declared `data` size larger than the file turned four bytes into an arbitrary allocation (a 100-byte file requesting 4 GB). An absurd-but-positive sample rate survived into every downstream operation, where delay lines and output lengths scale with it. Channel count, sample rate and chunk size are now bounded against the file.
 
 - Chunk skipping used `fseek(f, (long)chunk_size, SEEK_CUR)`. `long` is 32-bit on Windows, so a chunk declaring more than `LONG_MAX` bytes cast to a negative offset and seeked backwards, leaving the chunk scan re-reading the same bytes forever.
 
